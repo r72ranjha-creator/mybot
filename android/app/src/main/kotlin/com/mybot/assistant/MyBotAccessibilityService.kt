@@ -87,6 +87,33 @@ class MyBotAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * Android 14 (API 34) added a display-id parameter to takeScreenshot and
+     * the older two-argument form is no longer visible in the compile SDK, so
+     * Android 11-13 devices are handled through reflection on that same
+     * platform method.
+     */
+    private fun requestScreenshot(callback: TakeScreenshotCallback) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            takeScreenshot(
+                android.view.Display.DEFAULT_DISPLAY,
+                screenshotExecutor,
+                callback,
+            )
+            return
+        }
+        try {
+            val method = AccessibilityService::class.java.getMethod(
+                "takeScreenshot",
+                java.util.concurrent.Executor::class.java,
+                AccessibilityService.TakeScreenshotCallback::class.java,
+            )
+            method.invoke(this, screenshotExecutor, callback)
+        } catch (t: Throwable) {
+            callback.onFailure(-1)
+        }
+    }
+
+    /**
      * Screenshot of whatever is on screen, PNG, base64. Requires Android 11
      * (API 30) and the `canTakeScreenshot` flag in the service config.
      */
@@ -94,33 +121,31 @@ class MyBotAccessibilityService : AccessibilityService() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
         val latch = CountDownLatch(1)
         var png: ByteArray? = null
-        takeScreenshot(
-            screenshotExecutor,
-            object : TakeScreenshotCallback {
-                override fun onSuccess(screenshot: ScreenshotResult) {
-                    try {
-                        val buffer = screenshot.hardwareBuffer
-                        val bitmap = Bitmap.wrapHardwareBuffer(buffer, screenshot.colorSpace)
-                        val soft = bitmap?.copy(Bitmap.Config.ARGB_8888, false)
-                        buffer.close()
-                        if (soft != null) {
-                            val out = ByteArrayOutputStream()
-                            soft.compress(Bitmap.CompressFormat.PNG, 100, out)
-                            png = out.toByteArray()
-                            soft.recycle()
-                        }
-                    } catch (t: Throwable) {
-                        png = null
-                    } finally {
-                        latch.countDown()
+        val callback: TakeScreenshotCallback = object : TakeScreenshotCallback {
+            override fun onSuccess(screenshot: ScreenshotResult) {
+                try {
+                    val buffer = screenshot.hardwareBuffer
+                    val bitmap = Bitmap.wrapHardwareBuffer(buffer, screenshot.colorSpace)
+                    val soft = bitmap?.copy(Bitmap.Config.ARGB_8888, false)
+                    buffer.close()
+                    if (soft != null) {
+                        val out = ByteArrayOutputStream()
+                        soft.compress(Bitmap.CompressFormat.PNG, 100, out)
+                        png = out.toByteArray()
+                        soft.recycle()
                     }
-                }
-
-                override fun onFailure(errorCode: Int) {
+                } catch (t: Throwable) {
+                    png = null
+                } finally {
                     latch.countDown()
                 }
             }
-        )
+
+            override fun onFailure(errorCode: Int) {
+                latch.countDown()
+            }
+        }
+        requestScreenshot(callback)
         if (!latch.await(timeoutMs, TimeUnit.MILLISECONDS)) return null
         val bytes = png ?: return null
         return Base64.encodeToString(bytes, Base64.NO_WRAP)
