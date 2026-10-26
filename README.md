@@ -17,10 +17,16 @@ Ships as a single sideloadable APK produced by GitHub Actions.
    Android will warn that the app is from an unknown source — allow it for
    your browser/file manager once.
 
-The release APK is signed with the debug keystore generated on the runner.
-That is what makes sideloading work with no secrets in the repository. If you
-later want Play Store signing, add a keystore to repository secrets and wire it
-in `android/app/build.gradle.kts`.
+The release APK is signed with `android/app/mybot-release.jks`, a fixed key
+committed with the project. It exists so that consecutive builds share one
+signing identity — otherwise every CI run would sign with a fresh debug key and
+Android would refuse to install the update over the previous version, which
+wipes your data each time.
+
+That keystore protects nothing but this app's identity on your own phone. It is
+a sideload convenience, **not** a secret, and it must never be reused for an app
+you publish. For Play Store shipping, generate your own keystore and keep it in
+repository secrets instead.
 
 Requires Android 8.0+ (API 26). Screenshots need Android 11+ (API 30); on older
 phones everything works except chart screenshots, and the app says so instead
