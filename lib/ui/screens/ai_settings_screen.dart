@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../agent/ai_config.dart';
 import '../../core/constants.dart';
 import '../../data/models.dart';
+import '../../agent/research/search_client.dart';
 import '../../state/providers.dart';
 import '../widgets/common.dart';
 
@@ -264,6 +265,8 @@ class _AiSettingsScreenState extends ConsumerState<AiSettingsScreen> {
             ),
           ),
           const SizedBox(height: 12),
+          const _SearchKeysSection(),
+          const SizedBox(height: 12),
           SectionCard(
             title: 'Per-role models',
             subtitle: 'Tap a role to change its provider or model id.',
@@ -360,3 +363,150 @@ class _Metric extends StatelessWidget {
 class StateController extends ValueNotifier<String> {
   StateController(super.value);
 }
+
+/// Search provider keys. Same Keystore as the model keys, separate namespace.
+/// Research is disabled until at least one of these is present, and says so.
+class _SearchKeysSection extends ConsumerStatefulWidget {
+  const _SearchKeysSection();
+
+  @override
+  ConsumerState<_SearchKeysSection> createState() => _SearchKeysSectionState();
+}
+
+class _SearchKeysSectionState extends ConsumerState<_SearchKeysSection> {
+  static const _providers = [
+    ('tavily', 'Tavily', 'Default · best for deep research'),
+    ('perplexity', 'Perplexity', 'Optional premium'),
+    ('brave', 'Brave', 'Fallback'),
+    ('serper', 'Serper', 'Fallback (Google results)'),
+  ];
+
+  final Map<String, String?> _masked = {};
+  final Map<String, bool> _busy = {};
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  Future<void> _load() async {
+    final secure = ref.read(secureStoreProvider);
+    for (final provider in _providers) {
+      final masked = await secure.maskedKey('search_${provider.$1}');
+      if (!mounted) return;
+      setState(() => _masked[provider.$1] = masked);
+    }
+  }
+
+  Future<void> _setKey(String id, String label) async {
+    final controller = TextEditingController();
+    final key = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('$label API key'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          obscureText: true,
+          autocorrect: false,
+          enableSuggestions: false,
+          decoration: const InputDecoration(labelText: 'Key'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(controller.text.trim()),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (key == null || key.isEmpty) return;
+    await ref.read(secureStoreProvider).writeKey('search_$id', key);
+    await _load();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('$label key saved')));
+  }
+
+  Future<void> _test(String id, String label) async {
+    final key = await ref.read(secureStoreProvider).readKey('search_$id');
+    if (key == null || key.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Pehle key daalein.')));
+      return;
+    }
+    setState(() => _busy[id] = true);
+    try {
+      final result = await SearchClient(secure: ref.read(secureStoreProvider))
+          .test(id, key);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('$label: $result')));
+    } finally {
+      if (mounted) setState(() => _busy[id] = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return SectionCard(
+      title: 'Search providers',
+      subtitle: 'Research ke liye. Tavily sab se behtar hai; baqi fallback hain.',
+      child: Column(
+        children: [
+          for (final provider in _providers)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(provider.$2),
+              subtitle: Text(
+                _masked[provider.$1] == null
+                    ? 'No key · ${provider.$3}'
+                    : 'Key ${_masked[provider.$1]} · ${provider.$3}',
+                style: theme.textTheme.bodySmall,
+              ),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (_busy[provider.$1] ?? false)
+                    const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  else
+                    IconButton(
+                      tooltip: 'Test',
+                      onPressed: () => _test(provider.$1, provider.$2),
+                      icon: const Icon(Icons.network_check, size: 20),
+                    ),
+                  IconButton(
+                    tooltip: 'Set key',
+                    onPressed: () => _setKey(provider.$1, provider.$2),
+                    icon: const Icon(Icons.key, size: 20),
+                  ),
+                  IconButton(
+                    tooltip: 'Delete',
+                    onPressed: () async {
+                      await ref
+                          .read(secureStoreProvider)
+                          .deleteKey('search_${provider.$1}');
+                      await _load();
+                    },
+                    icon: const Icon(Icons.delete_outline, size: 20),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+

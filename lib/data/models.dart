@@ -9,6 +9,8 @@ class ChatMessage {
     required this.content,
     required this.createdAt,
     this.planId,
+    this.projectId,
+    this.attachmentCount = 0,
   });
 
   final String id;
@@ -18,6 +20,8 @@ class ChatMessage {
   final String content;
   final DateTime createdAt;
   final String? planId;
+  final String? projectId;
+  final int attachmentCount;
 
   bool get isUser => role == 'user';
 
@@ -27,6 +31,8 @@ class ChatMessage {
         'content': content,
         'created_at': createdAt.millisecondsSinceEpoch,
         'plan_id': planId,
+        'project_id': projectId,
+        'attachment_count': attachmentCount,
       };
 
   factory ChatMessage.fromMap(Map<String, Object?> map) => ChatMessage(
@@ -36,6 +42,8 @@ class ChatMessage {
         createdAt:
             DateTime.fromMillisecondsSinceEpoch(map['created_at'] as int),
         planId: map['plan_id'] as String?,
+        projectId: map['project_id'] as String?,
+        attachmentCount: (map['attachment_count'] as int?) ?? 0,
       );
 }
 

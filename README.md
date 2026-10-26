@@ -42,6 +42,29 @@ of failing silently.
 3. **A strategy** — Trading → *Strategies* → add one. The rules are JSON; they
    are what the vision model judges the chart against.
 
+## What it can do
+
+- **Voice** — mic in the composer (Urdu / English / Hindi recognition on the
+  phone's engine), spoken replies, one-tap mute. Voice and typing converge on
+  the same command parser, so a spoken command makes exactly the same plan.
+- **Photos** — gallery (up to 6) or camera, preview and remove before sending,
+  analysed by the vision model. Files are copied into app-private storage.
+- **Files** — PDF, TXT, MD, CSV, XLSX. PDFs are sent to the model as documents
+  (works for scans too); CSV/Excel are parsed on the phone so totals are real.
+- **Research** — Tavily → Perplexity → Brave → Serper with automatic fallback,
+  numbered citations, High/Medium/Low trust badges, and an explicit
+  "Reliable source nahi mila" instead of a guess.
+- **Deep Research** — 3–8 searches, deduped sources, a fixed report structure,
+  saved to a project and searchable later.
+- **Projects** — chats, reports and files grouped under custom instructions the
+  Manager Bot follows.
+- **Crypto mode** — news, official updates, GitHub activity, listings, unlocks,
+  bullish/bearish factors, always sourced, never advice.
+- **Internal search** — FTS5 over chats, reports, notes and file text, plus
+  structured questions over the trading journal.
+- **Order button** — off by default; when enabled, MyBot may press Buy/Sell
+  only after a fresh screenshot check and a per-press approval. See below.
+
 ## The safety model
 
 Every plan step carries a risk level: `read_only`, `reversible`, `sensitive`,
@@ -54,12 +77,23 @@ approval tap:
 | Balanced (default) | anything that leaves a trace: sending, posting, order screens |
 | Permissive | irreversible steps only |
 
-Three things are structural, not settings:
+The TradingView flow ends at a signal: MyBot opens the chart, screenshots it,
+reads it and tells you what it sees.
 
-- The TradingView flow ends at a signal. MyBot opens the chart, screenshots it,
-  reads it and tells you what it sees — it never taps **Buy** or **Sell**.
-- Blocked apps are never opened by any plan.
-- STOP BOT freezes the queue immediately, mid-plan.
+**Pressing Buy/Sell** is a separate, opt-in capability, off by default
+(`Settings → Trading`). When enabled it still requires, every single time:
+
+1. a screenshot under 20 s old on the TradingView package,
+2. a vision check that the visible button matches the side you asked for and the
+   symbol on the order form,
+3. your explicit approval on a card showing that screenshot.
+
+Hard blocks: one press per plan, 60 s cooldown, never from a schedule or a
+background task, never while the phone is locked. Each press is logged with a
+post-press screenshot.
+
+Blocked apps are never opened by any plan. STOP BOT freezes the queue
+immediately, mid-plan.
 
 ## Architecture
 
@@ -100,6 +134,8 @@ Output: `build/app/outputs/flutter-apk/app-release.apk`.
 
 ## What is deliberately not built yet
 
-See `PLAN.md`. Short version: on-device voice input, token streaming in chat,
-a MediaProjection fallback for screenshots below API 30, real notifications on
-signal, and encrypted backup export/restore.
+See `PLAN.md`. Short version, in the order they will land: scheduled research,
+PDF/Markdown export buttons, research follow-up control, then video (key frames
++ compression). Video and scheduled research both need native plugins, and no
+build here has been run on a physical device yet — adding them blind is how you
+break a working app.

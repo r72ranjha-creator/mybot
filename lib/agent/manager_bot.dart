@@ -1,14 +1,18 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:uuid/uuid.dart';
 
 import '../core/constants.dart';
+import '../data/media_models.dart';
 import '../data/models.dart';
 import '../data/repositories.dart';
+import '../data/research_models.dart';
 import '../platform/automation_bridge.dart';
 import 'ai_config.dart';
 import 'llm_client.dart';
 import 'prompts.dart';
+import 'research/research_engine.dart';
 import 'trading_engine.dart';
 
 class ManagerOutcome {
@@ -18,6 +22,7 @@ class ManagerOutcome {
     this.pending,
     this.stopped = false,
     this.failed = false,
+    this.report,
   });
 
   final String answer;
@@ -25,6 +30,10 @@ class ManagerOutcome {
   final ApprovalRequest? pending;
   final bool stopped;
   final bool failed;
+
+  /// Set when this run produced a cited research report, so the chat can render
+  /// the source list with trust badges.
+  final ResearchReport? report;
 }
 
 /// The controller. One entry point in (`handle`), one answer out.
@@ -40,7 +49,9 @@ class ManagerBot {
     required AiConfig config,
     required AppSettings settings,
     void Function(String message)? onProgress,
-  })  : _repos = repositories,
+    ResearchEngine? research,
+  })  : _research = research,
+        _repos = repositories,
         _bridge = bridge,
         _llm = llm,
         _config = config,
@@ -53,7 +64,13 @@ class ManagerBot {
   final AiConfig _config;
   final AppSettings _settings;
   final void Function(String message)? _onProgress;
+  final ResearchEngine? _research;
   static const _uuid = Uuid();
+
+  /// Media the user attached to the command being handled.
+  List<MediaFile> _attachments = const [];
+  ResearchReport? _lastReport;
+  String _projectId = '';
 
   TradingEngine get _trading => TradingEngine(
         repositories: _repos,
@@ -64,10 +81,17 @@ class ManagerBot {
 
   // ------------------------------------------------------------------ public
 
-  Future<ManagerOutcome> handle(String input) async {
+  Future<ManagerOutcome> handle(
+    String input, {
+    List<MediaFile> attachments = const [],
+    String? projectId,
+  }) async {
     final trimmed = input.trim();
-    if (trimmed.isEmpty) {
-      return ManagerOutcome(answer: 'Say what you want me to do.');
+    _attachments = attachments;
+    _lastReport = null;
+    _projectId = projectId ?? '';
+    if (trimmed.isEmpty && attachments.isEmpty) {
+      return ManagerOutcome(answer: 'Kuch likhein ya photo/awaaz bhejein.');
     }
     if (_settings.stopRequested) {
       return ManagerOutcome(
@@ -78,18 +102,37 @@ class ManagerBot {
     }
 
     final history = await _repos.chat.recent(limit: AppLimits.maxChatContextMessages);
+    final messageId = _uuid.v4();
     final userMessage = ChatMessage(
-      id: _uuid.v4(),
+      id: messageId,
       role: 'user',
-      content: trimmed,
+      content: trimmed.isEmpty
+          ? '(${attachments.length} attachment'
+              '${attachments.length == 1 ? '' : 's'})'
+          : trimmed,
       createdAt: DateTime.now(),
+      projectId: projectId,
+      attachmentCount: attachments.length,
     );
     await _repos.chat.add(userMessage);
+    for (var index = 0; index < attachments.length; index++) {
+      await _repos.media.attach(messageId, attachments[index].id, index);
+    }
+    await _repos.knowledge.index(
+      kind: 'chat',
+      id: messageId,
+      title: 'user',
+      body: userMessage.content,
+    );
     _onProgress?.call('Planning');
+
+    final planInput = attachments.isEmpty
+        ? trimmed
+        : '$trimmed\n\n[Attached: ${_attachmentContext()}]';
 
     TaskPlan plan;
     try {
-      plan = await _buildPlan(trimmed, history);
+      plan = await _buildPlan(planInput, history);
     } on LlmException catch (error) {
       return _fail(error.message);
     }
@@ -333,7 +376,7 @@ class ManagerBot {
         createdAt: DateTime.now(),
       ),
     );
-    return ManagerOutcome(answer: answer, plan: plan);
+    return ManagerOutcome(answer: answer, plan: plan, report: _lastReport);
   }
 
   Future<String> _runWithRetry(PlanStep step, List<String> prior) async {
@@ -359,6 +402,19 @@ class ManagerBot {
 
   Future<String> _dispatch(PlanStep step, List<String> prior) async {
     if (_settings.stopRequested) throw ManagerStop();
+
+    // Actions that are not tied to a single bot role are handled first, so the
+    // planner can attach them to whichever role fits the sentence.
+    if (step.action == 'describe_media') return _describeMedia(step);
+    if (step.action == 'summarize_file' || step.action == 'extract_tables') {
+      return _summariseFile(step);
+    }
+    if (step.action == 'web_search') return _webSearch(step);
+    if (step.action == 'deep_research') return _deepResearch(step);
+    if (step.action == 'crypto_brief') return _cryptoBrief(step);
+    if (step.action == 'internal_search') return _internalSearch(step);
+    if (step.action == 'trade_pattern') return _tradePattern(step);
+    if (step.action == 'tap_trade_button') return _tapTradeButton(step);
 
     switch (step.bot) {
       case BotRole.screenAgent:
@@ -675,6 +731,283 @@ class ManagerBot {
         : message;
     return ManagerOutcome(answer: friendly, failed: true);
   }
+
+  // ------------------------------------------------------- media & research
+
+  String _attachmentContext() {
+    if (_attachments.isEmpty) return '';
+    return _attachments.map((media) {
+      final bits = <String>[media.kind.id, media.fileName, media.sizeLabel];
+      if (media.durationMs != null) {
+        bits.add('${(media.durationMs! / 1000).round()}s');
+      }
+      return bits.join(' ');
+    }).join('; ');
+  }
+
+  String _question(PlanStep step) {
+    final fromParams = (step.params['query'] as String?)?.trim();
+    if (fromParams != null && fromParams.isNotEmpty) return fromParams;
+    return step.target.trim();
+  }
+
+  Future<String> _describeMedia(PlanStep step) async {
+    final images = _attachments.where((m) => m.kind.isImage).toList();
+    final docs = _attachments
+        .where((m) => m.kind == MediaKind.file && (m.extractedText ?? '').isNotEmpty)
+        .toList();
+    if (images.isEmpty && docs.isEmpty) {
+      throw ManagerBlocked('Koi photo ya file attach nahi hui.');
+    }
+
+    final question = _question(step);
+    final messages = <LlmMessage>[
+      LlmMessage(role: 'system', text: Prompts.mediaAnalysisSystem()),
+    ];
+
+    var index = 0;
+    for (final image in images.take(4)) {
+      final bytes = await _readBytes(image.path);
+      if (bytes == null) continue;
+      index++;
+      messages.add(LlmMessage(
+        role: 'user',
+        text: '[photo $index]',
+        imageBase64: base64Encode(bytes),
+      ));
+    }
+
+    final buffer = StringBuffer();
+    buffer.writeln(question.isEmpty
+        ? 'In tasveeron mein kya hai? Jo dikh raha hai wahi batayein.'
+        : question);
+    for (final doc in docs.take(2)) {
+      buffer.writeln('\n[file ${doc.fileName}]\n${_clipText(doc.extractedText!, 6000)}');
+    }
+    messages.add(LlmMessage(role: 'user', text: buffer.toString()));
+
+    final response = await _llm.complete(
+      config: _config,
+      role: BotRole.vision,
+      messages: messages,
+      temperature: 0.2,
+    );
+    if (response.text.isEmpty) {
+      throw ManagerBlocked('Vision model ne kuch nahi bataya.');
+    }
+    return response.text;
+  }
+
+  Future<String> _summariseFile(PlanStep step) async {
+    final docs = _attachments
+        .where((m) => m.kind == MediaKind.file && (m.extractedText ?? '').isNotEmpty)
+        .toList();
+    if (docs.isEmpty) {
+      throw ManagerBlocked('Koi PDF/CSV/Excel file attach nahi hui.');
+    }
+    final question = _question(step);
+    final buffer = StringBuffer();
+    for (final doc in docs.take(3)) {
+      buffer.writeln('\n--- ${doc.fileName} ---\n${_clipText(doc.extractedText!, 12000)}');
+    }
+
+    final response = await _llm.complete(
+      config: _config,
+      role: BotRole.analyst,
+      messages: [
+        LlmMessage(role: 'system', text: Prompts.fileAnalysisSystem()),
+        LlmMessage(
+          role: 'user',
+          text: '${question.isEmpty ? 'Is file ka khulasa dein.' : question}\n'
+              '$buffer',
+        ),
+      ],
+      temperature: 0.2,
+    );
+    return response.text.isEmpty
+        ? 'File se jawab nahi ban saka.'
+        : response.text;
+  }
+
+  Future<String> _webSearch(PlanStep step) => _runResearch(step, ResearchMode.quick);
+
+  Future<String> _deepResearch(PlanStep step) => _runResearch(step, ResearchMode.deep);
+
+  Future<String> _cryptoBrief(PlanStep step) =>
+      _runResearch(step, ResearchMode.deep, crypto: true);
+
+  Future<String> _runResearch(
+    PlanStep step,
+    ResearchMode mode, {
+    bool crypto = false,
+  }) async {
+    final engine = _research;
+    if (engine == null) {
+      throw ManagerBlocked(
+        'Research engine tayyar nahi. Search key AI settings mein daalein.',
+      );
+    }
+    final question = _question(step);
+    if (question.isEmpty) {
+      throw ManagerBlocked('Research ke liye sawal likhna zaroori hai.');
+    }
+    final flag = step.params['crypto'];
+    final cryptoMode = crypto || flag == true || flag == 'true';
+
+    final report = await engine.run(
+      question: question,
+      mode: mode,
+      cryptoMode: cryptoMode,
+      projectId: _projectId.isEmpty ? null : _projectId,
+      onProgress: (stage) => _onProgress?.call(stage),
+    );
+    _lastReport = report;
+    return report.bodyMarkdown;
+  }
+
+  Future<String> _internalSearch(PlanStep step) async {
+    final query = _question(step);
+    if (query.isEmpty) throw ManagerBlocked('Kya dhoondna hai?');
+    final hits = await _repos.knowledge.search(query, limit: 8);
+    if (hits.isEmpty) {
+      return 'Aap ke apne records mein "$query" ka kuch nahi mila.';
+    }
+    final buffer = StringBuffer('Aap ke apne records se:\n');
+    for (final hit in hits) {
+      buffer.writeln('• [${hit.kind}] ${hit.title}: ${hit.snippet}');
+    }
+    return buffer.toString();
+  }
+
+  /// "Meri pichli winning trades ka pattern" — a query over the journal, not text.
+  Future<String> _tradePattern(PlanStep step) async {
+    final signals = await _repos.trading.signals(limit: 60);
+    if (signals.isEmpty) return 'Journal khali hai — abhi koi trade record nahi.';
+
+    final bySymbol = <String, int>{};
+    final byDirection = <String, int>{};
+    var confidenceSum = 0.0;
+    var traded = 0;
+    for (final signal in signals) {
+      bySymbol[signal.symbol] = (bySymbol[signal.symbol] ?? 0) + 1;
+      byDirection[signal.direction] = (byDirection[signal.direction] ?? 0) + 1;
+      confidenceSum += signal.confidence.toDouble();
+      if (signal.direction != 'no_trade') traded++;
+    }
+    final topSymbols = bySymbol.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+
+    final buffer = StringBuffer()
+      ..writeln('Journal ka khulasa (${signals.length} signals):')
+      ..writeln('• Trade wale signals: $traded, no_trade: ${signals.length - traded}')
+      ..writeln('• Direction: ${byDirection.entries.map((e) => '${e.key} ${e.value}').join(', ')}')
+      ..writeln('• Average confidence: ${(confidenceSum / signals.length).round()}%')
+      ..writeln('• Sab se zyada: ${topSymbols.take(3).map((e) => '${e.key} (${e.value})').join(', ')}');
+    return buffer.toString();
+  }
+
+  /// Pressing Buy/Sell. Every guard in this method is load-bearing — see the
+  /// design note: one approval equals exactly one press.
+  Future<String> _tapTradeButton(PlanStep step) async {
+    if (!_settings.allowOrderTap) {
+      throw ManagerBlocked(
+        'Order button dabana band hai. Settings > Trading > "Allow MyBot to '
+        'press Buy/Sell" on karein, phir dobara kahein.',
+      );
+    }
+    final now = DateTime.now();
+    if (_lastOrderTap != null &&
+        now.difference(_lastOrderTap!) < const Duration(seconds: 60)) {
+      throw ManagerBlocked('Abhi abhi ek order press hua hai. 1 minute baad '
+          'try karein.');
+    }
+
+    final enabled = await _bridge.isServiceEnabled();
+    if (!enabled) {
+      throw ManagerBlocked('Accessibility service off hai.');
+    }
+
+    final package = await _bridge.currentPackage();
+    if (!package.toLowerCase().contains('tradingview')) {
+      throw ManagerBlocked(
+        'Screen TradingView par nahi hai (abhi: "${package.isEmpty ? 'unknown' : package}").',
+      );
+    }
+
+    final side = ((step.params['side'] as String?) ?? 'buy').toLowerCase();
+    final shotPath = await _bridge.screenshotToFile(prefix: 'order_pre');
+    final bytes = shotPath == null ? null : await _readBytes(shotPath);
+    if (bytes == null) {
+      throw ManagerBlocked('Order screen ka screenshot nahi mila.');
+    }
+
+    final nodes = await _bridge.dumpTree();
+    final labels = nodes
+        .map((node) => node.label)
+        .where((label) => label.trim().isNotEmpty)
+        .take(60)
+        .join(' | ');
+
+    final check = await _llm.complete(
+      config: _config,
+      role: BotRole.vision,
+      messages: [
+        LlmMessage(role: 'system', text: Prompts.tradeConfirmSystem()),
+        LlmMessage(
+          role: 'user',
+          text: 'User wants to press: $side\nOn-screen labels: $labels',
+          imageBase64: base64Encode(bytes),
+        ),
+      ],
+      jsonMode: true,
+      temperature: 0,
+    );
+    final verdict = parseJsonObject(check.text);
+    final safe = verdict?['safe'] == true;
+    final label = (verdict?['button_label'] as String?)?.trim();
+
+    if (!safe || label == null || label.isEmpty) {
+      final reason = (verdict?['reason'] as String?) ?? 'screen match nahi hui';
+      throw ManagerBlocked('Press nahi kiya — $reason');
+    }
+
+    final tapped = await _bridge.tapText(label, exact: false);
+    if (!tapped) {
+      throw ManagerBlocked('Button "$label" screen par nahi mila.');
+    }
+    _lastOrderTap = DateTime.now();
+    await Future<void>.delayed(const Duration(milliseconds: 1800));
+    final after = await _bridge.screenshotToFile(prefix: 'order_post');
+
+    await _repos.logs.add(ActivityLog(
+      id: _uuid.v4(),
+      app: 'TradingView',
+      action: 'tap_trade_button $side ("$label")',
+      model: '${check.providerId}/${check.model}',
+      status: 'executed',
+      detail: (verdict?['symbol'] as String?) ?? '',
+      screenshotPath: after ?? shotPath,
+      createdAt: DateTime.now(),
+    ));
+
+    return 'Order button "$label" daba diya (aap ke approve karne par). '
+        'Baad ka screenshot save ho gaya.';
+  }
+
+  static DateTime? _lastOrderTap;
+
+  Future<List<int>?> _readBytes(String path) async {
+    try {
+      final file = File(path);
+      if (!await file.exists()) return null;
+      return await file.readAsBytes();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String _clipText(String value, int limit) =>
+      value.length <= limit ? value : '${value.substring(0, limit)}…';
 }
 
 /// Internal signal: a step asked us to stop the plan.

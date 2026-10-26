@@ -10,7 +10,14 @@ import '../data/secure_store.dart';
 import 'ai_config.dart';
 
 class LlmMessage {
-  LlmMessage({required this.role, required this.text, this.imageBase64});
+  LlmMessage({
+    required this.role,
+    required this.text,
+    this.imageBase64,
+    this.documentBase64,
+    this.documentMime,
+    this.documentName,
+  });
 
   /// system | user | assistant
   final String role;
@@ -19,20 +26,38 @@ class LlmMessage {
   /// PNG, base64. Used for screenshot analysis.
   final String? imageBase64;
 
+  /// A whole document (PDF today), base64. All three providers accept these
+  /// inline, which is why the app does not need an on-device PDF parser.
+  final String? documentBase64;
+  final String? documentMime;
+  final String? documentName;
+
+  bool get hasBinary => imageBase64 != null || documentBase64 != null;
+
   Map<String, Object?> toOpenAi() {
-    if (imageBase64 == null) {
+    if (!hasBinary) {
       return {'role': role, 'content': text};
     }
-    return {
-      'role': role,
-      'content': [
-        {'type': 'text', 'text': text},
-        {
-          'type': 'image_url',
-          'image_url': {'url': 'data:image/png;base64,$imageBase64'},
+    final parts = <Map<String, Object?>>[
+      {'type': 'text', 'text': text},
+    ];
+    if (imageBase64 != null) {
+      parts.add({
+        'type': 'image_url',
+        'image_url': {'url': 'data:image/png;base64,$imageBase64'},
+      });
+    }
+    if (documentBase64 != null) {
+      parts.add({
+        'type': 'file',
+        'file': {
+          'filename': documentName ?? 'document.pdf',
+          'file_data':
+              'data:${documentMime ?? 'application/pdf'};base64,$documentBase64',
         },
-      ],
-    };
+      });
+    }
+    return {'role': role, 'content': parts};
   }
 }
 
@@ -253,6 +278,16 @@ class LlmClient {
           },
         });
       }
+      if (message.documentBase64 != null) {
+        blocks.add({
+          'type': 'document',
+          'source': {
+            'type': 'base64',
+            'media_type': message.documentMime ?? 'application/pdf',
+            'data': message.documentBase64,
+          },
+        });
+      }
       contents.add({
         'role': message.role == 'assistant' ? 'assistant' : 'user',
         'content': blocks,
@@ -314,6 +349,14 @@ class LlmClient {
           'inline_data': {
             'mime_type': 'image/png',
             'data': message.imageBase64,
+          },
+        });
+      }
+      if (message.documentBase64 != null) {
+        parts.add({
+          'inline_data': {
+            'mime_type': message.documentMime ?? 'application/pdf',
+            'data': message.documentBase64,
           },
         });
       }

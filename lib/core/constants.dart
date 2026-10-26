@@ -11,6 +11,7 @@ class BotRole {
   static const action = 'action';
   static const trading = 'trading_strategy';
   static const crypto = 'crypto_research';
+  static const researchPlanner = 'research_planner';
 
   static const all = <String>[
     manager,
@@ -24,6 +25,7 @@ class BotRole {
     action,
     trading,
     crypto,
+    researchPlanner,
   ];
 
   static const labels = <String, String>{
@@ -38,6 +40,7 @@ class BotRole {
     action: 'Action bot',
     trading: 'Trading strategy',
     crypto: 'Crypto research',
+    researchPlanner: 'Research planner',
   };
 
   static const hints = <String, String>{
@@ -52,6 +55,7 @@ class BotRole {
     action: 'Performs the approved action',
     trading: 'Applies your saved strategy rules',
     crypto: 'Token / market research',
+    researchPlanner: 'Splits a question into 3-8 searches',
   };
 }
 

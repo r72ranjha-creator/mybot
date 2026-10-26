@@ -125,6 +125,65 @@ class SettingsScreen extends ConsumerWidget {
           ),
           const SizedBox(height: 12),
           SectionCard(
+            title: 'Trading',
+            subtitle: 'MyBot kabhi khud trade nahi karta. Ye sirf button dabane '
+                'ki ijazat hai, aur wo bhi har dafa aap ki tasdeeq ke baad.',
+            child: Column(
+              children: [
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Buy/Sell button dabane ki ijazat'),
+                  subtitle: Text(
+                    settings.allowOrderTap
+                        ? 'On — har press se pehle screenshot dikh kar poocha jayega.'
+                        : 'Off — MyBot button nahi dabata.',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  value: settings.allowOrderTap,
+                  onChanged: (value) async {
+                    if (!value) {
+                      await notifier.patch(
+                        (current) => current.copyWith(allowOrderTap: false),
+                      );
+                      return;
+                    }
+                    final confirmed = await showDialog<bool>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('Dhyan se parh lein'),
+                        content: const Text(
+                          'Is ke baad MyBot, aap ke hukum par, TradingView ke '
+                          'Buy ya Sell button ko khud daba sakta hai.\n\n'
+                          'Har press se pehle aap ko screenshot dikh kar '
+                          'tasdeeq manga jayegi, magar ghalat waqt par dabne '
+                          'se asli paisa ja sakta hai.\n\n'
+                          'MyBot khud kabhi trade nahi karega, schedule par '
+                          'nahi dabayega, aur ek hi plan mein ek hi dafa dabayega.',
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.of(context).pop(false),
+                            child: const Text('Cancel'),
+                          ),
+                          FilledButton(
+                            onPressed: () => Navigator.of(context).pop(true),
+                            child: const Text('Main samajh gaya, on karein'),
+                          ),
+                        ],
+                      ),
+                    );
+                    if (confirmed == true) {
+                      await notifier.patch(
+                        (current) => current.copyWith(allowOrderTap: true),
+                      );
+                    }
+                  },
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          SectionCard(
             title: 'Backup',
             subtitle: 'Settings and routing as JSON. Keys are not included.',
             child: Row(

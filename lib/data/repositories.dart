@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:sqflite/sqflite.dart';
 
 import 'db.dart';
+import 'extra_repositories.dart';
 import 'models.dart';
 
 class ChatRepository {
@@ -310,7 +311,11 @@ class Repositories {
         logs = LogRepository(db),
         appRules = AppRuleRepository(db),
         settings = SettingsRepository(db),
-        usage = UsageRepository(db);
+        usage = UsageRepository(db),
+        media = MediaRepository(db),
+        projects = ProjectRepository(db),
+        research = ResearchRepository(db),
+        knowledge = KnowledgeRepository(db);
 
   final ChatRepository chat;
   final PlanRepository plans;
@@ -320,6 +325,10 @@ class Repositories {
   final AppRuleRepository appRules;
   final SettingsRepository settings;
   final UsageRepository usage;
+  final MediaRepository media;
+  final ProjectRepository projects;
+  final ResearchRepository research;
+  final KnowledgeRepository knowledge;
 }
 
 String encodeJson(Object? value) => jsonEncode(value);

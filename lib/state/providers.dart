@@ -1,15 +1,22 @@
 import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../agent/ai_config.dart';
 import '../agent/llm_client.dart';
 import '../agent/manager_bot.dart';
+import '../agent/research/research_engine.dart';
 import '../data/db.dart';
+import '../data/media_models.dart';
 import '../data/models.dart';
 import '../data/repositories.dart';
+import '../data/research_models.dart';
 import '../data/secure_store.dart';
+import '../media/media_pipeline.dart';
 import '../platform/automation_bridge.dart';
+import '../voice/stt_service.dart';
+import '../voice/tts_service.dart';
 
 final selectedTabProvider = StateProvider<int>((ref) => 0);
 
@@ -28,6 +35,50 @@ final llmClientProvider = Provider<LlmClient>((ref) => LlmClient(
 
 final automationProvider =
     Provider<AutomationBridge>((ref) => AutomationBridge());
+
+final sttProvider = Provider<SttService>((ref) => SttService());
+
+final imagePickerProvider = Provider<ImagePicker>((ref) => ImagePicker());
+
+final ttsProvider = Provider<TtsService>((ref) => TtsService());
+
+final mediaPipelineProvider = Provider<MediaPipeline>(
+  (ref) => MediaPipeline(repositories: ref.watch(repositoriesProvider)),
+);
+
+/// Which project the composer is scoped to, if any.
+final activeProjectProvider = StateProvider<String?>((ref) => null);
+
+/// Search provider order. Keys themselves live in the Keystore.
+final searchOrderProvider = Provider<List<String>>((ref) {
+  return const ['tavily', 'perplexity', 'brave', 'serper'];
+});
+
+final researchEngineProvider = Provider<ResearchEngine>((ref) {
+  final config = ref.watch(aiConfigProvider).valueOrNull ?? AiConfig.defaults();
+  return ResearchEngine(
+    repositories: ref.watch(repositoriesProvider),
+    llm: ref.watch(llmClientProvider),
+    config: config,
+    secure: ref.watch(secureStoreProvider),
+    order: ref.watch(searchOrderProvider),
+  );
+});
+
+final projectsProvider = FutureProvider<List<Project>>(
+  (ref) => ref.watch(repositoriesProvider).projects.all(),
+);
+
+final projectReportsProvider = FutureProvider.family<List<ResearchReport>, String?>(
+  (ref, projectId) => ref.watch(repositoriesProvider).research.recent(
+        projectId: projectId,
+        limit: 30,
+      ),
+);
+
+final mediaLibraryProvider = FutureProvider<List<MediaFile>>(
+  (ref) => ref.watch(repositoriesProvider).media.recent(limit: 60),
+);
 
 // ------------------------------------------------------------------- config
 
@@ -154,6 +205,7 @@ class ChatState {
     this.status,
     this.pendingApproval,
     this.lastFailed = false,
+    this.report,
   });
 
   final List<ChatMessage> messages;
@@ -161,6 +213,7 @@ class ChatState {
   final String? status;
   final ApprovalRequest? pendingApproval;
   final bool lastFailed;
+  final ResearchReport? report;
 
   static final empty = ChatState();
 
@@ -172,6 +225,8 @@ class ChatState {
     ApprovalRequest? pendingApproval,
     bool clearApproval = false,
     bool? lastFailed,
+    ResearchReport? report,
+    bool clearReport = false,
   }) =>
       ChatState(
         messages: messages ?? this.messages,
@@ -180,6 +235,7 @@ class ChatState {
         pendingApproval:
             clearApproval ? null : (pendingApproval ?? this.pendingApproval),
         lastFailed: lastFailed ?? this.lastFailed,
+        report: clearReport ? null : (report ?? this.report),
       );
 }
 
@@ -198,7 +254,11 @@ class ChatController extends Notifier<ChatState> {
 
   Future<void> refresh() => _load();
 
-  Future<void> send(String text) async {
+  Future<void> send(
+    String text, {
+    List<MediaFile> attachments = const [],
+    String? projectId,
+  }) async {
     if (state.busy) return;
     final config = await ref.read(aiConfigProvider.future);
     final settings = await ref.read(appSettingsProvider.future);
@@ -227,10 +287,15 @@ class ChatController extends Notifier<ChatState> {
       config: config,
       settings: settings,
       onProgress: (message) => state = state.copyWith(status: message),
+      research: ref.read(researchEngineProvider),
     );
 
     try {
-      final outcome = await manager.handle(text);
+      final outcome = await manager.handle(
+        text,
+        attachments: attachments,
+        projectId: projectId,
+      );
       final refreshed = await repos.chat.recent(limit: 80);
       state = state.copyWith(
         busy: false,
@@ -238,6 +303,8 @@ class ChatController extends Notifier<ChatState> {
         messages: refreshed,
         pendingApproval: outcome.pending,
         lastFailed: outcome.failed,
+        report: outcome.report,
+        clearReport: outcome.report == null,
       );
       _refreshCounters();
     } catch (error) {
@@ -285,6 +352,7 @@ class ChatController extends Notifier<ChatState> {
       config: config,
       settings: settings,
       onProgress: (message) => state = state.copyWith(status: message),
+      research: ref.read(researchEngineProvider),
     );
 
     try {

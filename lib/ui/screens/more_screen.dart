@@ -6,6 +6,7 @@ import '../theme.dart';
 import '../widgets/common.dart';
 import 'ai_settings_screen.dart';
 import 'apps_screen.dart';
+import 'projects_screen.dart';
 import 'logs_screen.dart';
 import 'settings_screen.dart';
 
@@ -49,6 +50,24 @@ class MoreScreen extends ConsumerWidget {
                 badge: failed == 0 ? null : '$failed',
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute(builder: (_) => const LogsScreen()),
+                ),
+              ),
+              _Entry(
+                icon: Icons.folder_outlined,
+                title: 'Projects',
+                subtitle: 'Chats, reports aur files project ke andar',
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const ProjectsScreen()),
+                ),
+              ),
+              _Entry(
+                icon: Icons.travel_explore,
+                title: 'Research reports',
+                subtitle: 'Sources ke sath saved research',
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const ResearchReportsScreen(),
+                  ),
                 ),
               ),
               _Entry(

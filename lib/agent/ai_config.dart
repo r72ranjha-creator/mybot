@@ -88,12 +88,25 @@ class AiConfig {
         'roles': roles.map((r) => r.toJson()).toList(),
       };
 
+  /// A saved config from an older build will not know about roles added later.
+  /// Merging defaults for the missing ones keeps every route mapped after an
+  /// update instead of silently disabling a bot.
+  AiConfig withMissingRoles() {
+    final defaults = AiConfig.defaults();
+    final missing = BotRole.all
+        .where((role) => this.role(role) == null)
+        .map((role) => defaults.role(role)!)
+        .toList();
+    if (missing.isEmpty) return this;
+    return AiConfig(providers: providers, roles: [...roles, ...missing]);
+  }
+
   factory AiConfig.fromJson(Map<String, Object?> json) {
     final base = AiConfig.defaults();
     final rawProviders = (json['providers'] as List?) ?? const [];
     final rawRoles = (json['roles'] as List?) ?? const [];
     if (rawProviders.isEmpty && rawRoles.isEmpty) return base;
-    return AiConfig(
+    final merged = AiConfig(
       providers: rawProviders.isEmpty
           ? base.providers
           : rawProviders
@@ -105,6 +118,7 @@ class AiConfig {
               .map((e) => RoleConfig.fromJson((e as Map).cast<String, Object?>()))
               .toList(),
     );
+    return merged.withMissingRoles();
   }
 
   String encode() => jsonEncode(toJson());
@@ -133,6 +147,10 @@ class AppSettings {
     this.safety = SafetyLevel.balanced,
     this.stopRequested = false,
     this.defaultStrategyId,
+    this.allowOrderTap = false,
+    this.voiceMuted = false,
+    this.videoMaxSeconds = 60,
+    this.lastProjectId,
   });
 
   final bool onboarded;
@@ -143,6 +161,13 @@ class AppSettings {
   final bool stopRequested;
   final String? defaultStrategyId;
 
+  /// Off by default. When on, MyBot may press the order button — but only ever
+  /// after an explicit per-press approval (see ManagerBot._tapTradeButton).
+  final bool allowOrderTap;
+  final bool voiceMuted;
+  final int videoMaxSeconds;
+  final String? lastProjectId;
+
   AppSettings copyWith({
     bool? onboarded,
     String? language,
@@ -151,6 +176,10 @@ class AppSettings {
     SafetyLevel? safety,
     bool? stopRequested,
     String? defaultStrategyId,
+    bool? allowOrderTap,
+    bool? voiceMuted,
+    int? videoMaxSeconds,
+    String? lastProjectId,
   }) =>
       AppSettings(
         onboarded: onboarded ?? this.onboarded,
@@ -160,6 +189,10 @@ class AppSettings {
         safety: safety ?? this.safety,
         stopRequested: stopRequested ?? this.stopRequested,
         defaultStrategyId: defaultStrategyId ?? this.defaultStrategyId,
+        allowOrderTap: allowOrderTap ?? this.allowOrderTap,
+        voiceMuted: voiceMuted ?? this.voiceMuted,
+        videoMaxSeconds: videoMaxSeconds ?? this.videoMaxSeconds,
+        lastProjectId: lastProjectId ?? this.lastProjectId,
       );
 
   Map<String, Object?> toJson() => {
@@ -169,6 +202,10 @@ class AppSettings {
         'notifications': notifications,
         'safety': safety.id,
         'defaultStrategyId': defaultStrategyId,
+        'allowOrderTap': allowOrderTap,
+        'voiceMuted': voiceMuted,
+        'videoMaxSeconds': videoMaxSeconds,
+        'lastProjectId': lastProjectId,
       };
 
   factory AppSettings.fromJson(Map<String, Object?> json) => AppSettings(
@@ -178,6 +215,10 @@ class AppSettings {
         notifications: (json['notifications'] as bool?) ?? true,
         safety: SafetyLevelX.parse(json['safety'] as String?),
         defaultStrategyId: json['defaultStrategyId'] as String?,
+        allowOrderTap: (json['allowOrderTap'] as bool?) ?? false,
+        voiceMuted: (json['voiceMuted'] as bool?) ?? false,
+        videoMaxSeconds: (json['videoMaxSeconds'] as int?) ?? 60,
+        lastProjectId: json['lastProjectId'] as String?,
       );
 
   static const storageKey = 'app.settings';

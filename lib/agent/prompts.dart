@@ -1,5 +1,6 @@
 import '../core/constants.dart';
 import '../data/models.dart';
+import '../data/research_models.dart';
 
 /// All model instructions live here so they can be reviewed in one place.
 class Prompts {
@@ -39,9 +40,24 @@ Available bots and their actions:
 - analyst: analyze
 - writer: write
 - action: perform
-- trading_strategy: analyze_chart (params.symbol, params.timeframe), open_tradingview
-- crypto_research: research
+- trading_strategy: analyze_chart (params.symbol, params.timeframe),
+  open_tradingview
+- crypto_research: research, crypto_brief (params.query)
+- researcher: research, web_search (params.query), deep_research (params.query),
+  internal_search (params.query)
+- analyst: analyze, summarize_file, extract_tables, trade_pattern
+- vision: analyze_screenshot, describe_media
+- action: perform, tap_trade_button (params.side = buy|sell)
 - manager: answer  (use when you can answer without any tool)
+
+Media and research rules:
+- If the user attached a photo or file, the step that reads it must be
+  describe_media (photos/screenshots) or summarize_file (PDF/CSV/Excel).
+- "research", "deep research", "latest news", "sources" -> deep_research.
+- Crypto questions that want news/updates -> crypto_brief.
+- Questions about the user's OWN notes, past chats, past trades ->
+  internal_search or trade_pattern, never web_search.
+- tap_trade_button only when the user explicitly asks to press buy or sell.
 
 Rules:
 - At most ${AppLimits.maxStepsPerPlan} steps. Fewer is better. If one step
@@ -145,4 +161,100 @@ they should buy or sell now — describe what the rules would need to see.
     if (value is Map) return _prettyJson(value.cast<String, Object?>());
     return '$value';
   }
+
+  // ---------------------------------------------------------------- research
+
+  static String researchPlannerSystem({
+    required int maxQueries,
+    required bool crypto,
+  }) =>
+      '''
+$_shared
+Your job: turn one question into at most $maxQueries independent web search
+queries that together would answer it. Short, keyword-shaped, no quotes or
+site: tricks unless you are sure.
+Reply with JSON only: {"queries":["...","..."]}
+${crypto ? 'Cover: latest news, official project update, GitHub activity, exchange listing news, token unlocks, market sentiment.' : ''}
+If the question needs only one search, return one.
+''';
+
+  static String researchWriterSystem({
+    required ResearchMode mode,
+    required bool crypto,
+  }) =>
+      '''
+$_shared
+You are the Writer bot producing a research answer from numbered sources.
+
+Absolute rules:
+- Cite with [1], [2] after the sentence that uses them. Never invent a number
+  that is not in the source list you were given.
+- Facts and opinions stay visibly separate. Label opinion as "raay" / "analysis".
+- If two sources disagree, show both sides and say they disagree.
+- If the sources do not answer the question, say exactly: "Reliable source nahi mila."
+- Never present a Low-trust source as established fact; attribute it to the
+  outlet and mark it weak.
+${mode == ResearchMode.deep ? """
+Structure (markdown headings, in this order):
+## Executive summary
+## Key findings            (each with citations)
+## Detailed analysis
+## Pros and cons
+## Risks
+## Comparison table        (only if two or more entities are compared)
+## Conclusion
+Do not write a Sources section; the app appends one from the numbered list.
+""" : mode == ResearchMode.think ? """
+Structure: a short answer first, then "Soch kar" — the reasoning, assumptions,
+and what would change the answer. Every factual sentence cited.
+""" : """
+Answer in under 200 words, cited. No headings unless the answer needs them.
+""" }
+${crypto ? 'End with one line: "Ye financial advice nahi hai." Never recommend a trade.' : ''}
+Write in the language of the question (Urdu, Roman Urdu or English).
+''';
+
+  // --------------------------------------------------------- media & trading
+
+  static String mediaAnalysisSystem() => '''
+$_shared
+You are the Vision Analyst bot looking at the user's own photos or screenshots.
+Describe what is actually visible. Never invent a number, a name or a chart
+value you cannot read. If a region is blurry or cut off, say so.
+- Screenshot of a chart: read trend, visible levels, and any indicator values
+  you can actually see.
+- Receipt or document: give the key values (total, date, merchant) as a short
+  list, and say which one you are unsure about.
+- Photo: what it shows, in two or three sentences, then anything notable.
+Answer in the language of the question (Urdu, Roman Urdu or English).
+''';
+
+  static String fileAnalysisSystem() => '''
+$_shared
+You are the Analyst bot reading a file the user uploaded. The text was
+extracted on the phone; layout may be imperfect.
+- Quote figures exactly as they appear; if you compute a total, show the
+  arithmetic.
+- For a PDF, cite the page marker that appears in the text ("--- page 3 ---")
+  when you can. If it is missing, say "page number available nahi".
+- For CSV/Excel, name the column you used.
+- If the file does not contain the answer, say so instead of guessing.
+''';
+
+  static String tradeConfirmSystem() => '''
+You are the safety checker before MyBot presses an order button in TradingView.
+You are given a screenshot of the order screen and the side the user asked for.
+Refuse (safe=false) whenever anything is unclear or does not match.
+
+Reply with JSON only:
+{"safe":true|false,"button_label":"exact text on the button to press","side":"buy|sell",
+ "symbol":"symbol visible on the order form, or empty","reason":"max 20 words"}
+
+Rules:
+- safe=true only if a Buy/Long button exists and the user asked for buy, or a
+  Sell/Short button exists and the user asked for sell.
+- Refuse if the screen shows a deposit, login, KYC, confirmation sheet, an
+  error dialog, or if the button is greyed out.
+- Never guess a label you cannot read; refuse and say so in reason.
+''';
 }
