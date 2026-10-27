@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models.dart';
-import '../../platform/automation_bridge.dart';
 import '../../state/providers.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
@@ -85,17 +84,17 @@ class _AppsScreenState extends ConsumerState<AppsScreen> {
                         dense: true,
                         value: !(blocked[app.package] ?? false),
                         onChanged: (allowed) async {
-                          final repos = ref.read(repositoriesProvider);
-                          await repos.appRules.upsert(
-                            AppRule(
-                              package: app.package,
-                              label: app.label.isNotEmpty
-                                  ? app.label
-                                  : app.package,
-                            ),
-                          );
-                          await repos.appRules
-                              .setBlocked(app.package, !allowed);
+                          // One write, one row state: the rule carries both the
+                          // label and the decision.
+                          await ref.read(repositoriesProvider).appRules.upsert(
+                                AppRule(
+                                  package: app.package,
+                                  label: app.label.isNotEmpty
+                                      ? app.label
+                                      : app.package,
+                                  blocked: !allowed,
+                                ),
+                              );
                           ref.invalidate(appRulesProvider);
                         },
                         title: Text(app.label),
@@ -151,9 +150,4 @@ class _AppsScreenState extends ConsumerState<AppsScreen> {
       ),
     );
   }
-}
-
-/// Small helper so callers can show a snapshot of the device list.
-Future<List<InstalledApp>> loadApps(WidgetRef ref) async {
-  return ref.read(automationProvider).installedApps();
 }

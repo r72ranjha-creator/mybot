@@ -176,6 +176,7 @@ class AppSettings {
     SafetyLevel? safety,
     bool? stopRequested,
     String? defaultStrategyId,
+    bool clearDefaultStrategy = false,
     bool? allowOrderTap,
     bool? voiceMuted,
     int? videoMaxSeconds,
@@ -188,19 +189,24 @@ class AppSettings {
         notifications: notifications ?? this.notifications,
         safety: safety ?? this.safety,
         stopRequested: stopRequested ?? this.stopRequested,
-        defaultStrategyId: defaultStrategyId ?? this.defaultStrategyId,
+        defaultStrategyId: clearDefaultStrategy
+            ? null
+            : (defaultStrategyId ?? this.defaultStrategyId),
         allowOrderTap: allowOrderTap ?? this.allowOrderTap,
         voiceMuted: voiceMuted ?? this.voiceMuted,
         videoMaxSeconds: videoMaxSeconds ?? this.videoMaxSeconds,
         lastProjectId: lastProjectId ?? this.lastProjectId,
       );
 
+  // `stopRequested` is persisted on purpose: STOP is a safety state, and a
+  // restart must not quietly hand the bot back to the user mid-halt.
   Map<String, Object?> toJson() => {
         'onboarded': onboarded,
         'language': language,
         'darkMode': darkMode,
         'notifications': notifications,
         'safety': safety.id,
+        'stopRequested': stopRequested,
         'defaultStrategyId': defaultStrategyId,
         'allowOrderTap': allowOrderTap,
         'voiceMuted': voiceMuted,
@@ -214,6 +220,7 @@ class AppSettings {
         darkMode: (json['darkMode'] as bool?) ?? true,
         notifications: (json['notifications'] as bool?) ?? true,
         safety: SafetyLevelX.parse(json['safety'] as String?),
+        stopRequested: (json['stopRequested'] as bool?) ?? false,
         defaultStrategyId: json['defaultStrategyId'] as String?,
         allowOrderTap: (json['allowOrderTap'] as bool?) ?? false,
         voiceMuted: (json['voiceMuted'] as bool?) ?? false,

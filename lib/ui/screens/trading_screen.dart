@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../agent/ai_config.dart';
 import '../../agent/trading_engine.dart';
 import '../../data/models.dart';
 import '../../state/providers.dart';
@@ -46,6 +47,7 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
       final result = await engine.runOnDevice(strategy: strategy);
       ref.invalidate(signalsProvider);
       ref.invalidate(logsProvider);
+      await _notifySignal(result.signal);
       if (!mounted) return;
       setState(() => _status = null);
       _showSignal(result.signal);
@@ -93,87 +95,156 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     );
   }
 
-  Future<void> _addStrategy() async {
-    final nameController = TextEditingController(text: 'My strategy');
-    final symbolController = TextEditingController(text: 'BINANCE:BTCUSDT');
-    final timeframeController = TextEditingController(text: '15');
+  /// Create or edit a strategy. Invalid JSON is refused with the reason
+  /// instead of being silently replaced by the defaults.
+  Future<void> _strategyDialog({Strategy? existing}) async {
+    final nameController =
+        TextEditingController(text: existing?.name ?? 'My strategy');
+    final symbolController =
+        TextEditingController(text: existing?.symbol ?? 'BINANCE:BTCUSDT');
+    final timeframeController =
+        TextEditingController(text: existing?.timeframe ?? '15');
     final rulesController = TextEditingController(
-      text: const JsonEncoder.withIndent('  ').convert(_defaultRules),
+      text: existing == null
+          ? const JsonEncoder.withIndent('  ').convert(_defaultRules)
+          : const JsonEncoder.withIndent('  ').convert(existing.rules),
     );
+    var error = '';
 
     final saved = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('New strategy'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameController,
-                decoration: const InputDecoration(labelText: 'Name'),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: symbolController,
-                decoration: const InputDecoration(
-                  labelText: 'Symbol',
-                  hintText: 'BINANCE:BTCUSDT',
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(existing == null ? 'New strategy' : 'Edit strategy'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(labelText: 'Name'),
                 ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: timeframeController,
-                decoration: const InputDecoration(
-                  labelText: 'Timeframe minutes',
-                  hintText: '5, 15, 60, 240',
+                const SizedBox(height: 10),
+                TextField(
+                  controller: symbolController,
+                  decoration: const InputDecoration(
+                    labelText: 'Symbol',
+                    hintText: 'BINANCE:BTCUSDT',
+                  ),
                 ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: rulesController,
-                minLines: 6,
-                maxLines: 12,
-                style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-                decoration: const InputDecoration(labelText: 'Rules (JSON)'),
-              ),
-            ],
+                const SizedBox(height: 10),
+                TextField(
+                  controller: timeframeController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Timeframe minutes',
+                    hintText: '5, 15, 60, 240',
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: rulesController,
+                  minLines: 6,
+                  maxLines: 12,
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                  decoration: const InputDecoration(labelText: 'Rules (JSON)'),
+                ),
+                if (error.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 10),
+                    child: Text(
+                      error,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: MyBotTheme.danger,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final name = nameController.text.trim();
+                final symbol = symbolController.text.trim();
+                final timeframe = timeframeController.text.trim();
+                final decoded = _parseRules(rulesController.text);
+                final problem = name.isEmpty
+                    ? 'Name khali nahi ho sakta.'
+                    : symbol.isEmpty
+                        ? 'Symbol likhein.'
+                        : timeframe.isEmpty
+                            ? 'Timeframe likhein (minutes).'
+                            : decoded == null
+                                ? 'Rules valid JSON object nahi hain.'
+                                : decoded.isEmpty
+                                    ? 'Rules khali nahi ho sakte.'
+                                    : '';
+                if (problem.isNotEmpty) {
+                  setDialogState(() => error = problem);
+                  return;
+                }
+                Navigator.of(context).pop(true);
+              },
+              child: const Text('Save'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Save'),
-          ),
-        ],
       ),
     );
 
-    if (saved != true) return;
-    Map<String, Object?> rules;
-    try {
-      final decoded = jsonDecode(rulesController.text);
-      rules = decoded is Map ? decoded.cast<String, Object?>() : _defaultRules;
-    } catch (_) {
-      rules = _defaultRules;
-    }
+    final name = nameController.text.trim();
+    final symbol = symbolController.text.trim();
+    final timeframe = timeframeController.text.trim();
+    final rules = _parseRules(rulesController.text) ?? _defaultRules;
+    nameController.dispose();
+    symbolController.dispose();
+    timeframeController.dispose();
+    rulesController.dispose();
 
+    if (saved != true) return;
     await ref.read(repositoriesProvider).trading.saveStrategy(
           Strategy(
-            id: const Uuid().v4(),
-            name: nameController.text.trim().isEmpty
-                ? 'Strategy'
-                : nameController.text.trim(),
-            symbol: symbolController.text.trim().toUpperCase(),
-            timeframe: timeframeController.text.trim(),
+            id: existing?.id ?? const Uuid().v4(),
+            name: name,
+            symbol: symbol.toUpperCase(),
+            timeframe: timeframe,
             rules: rules,
+            active: existing?.active ?? true,
           ),
         );
     ref.invalidate(strategiesProvider);
+  }
+
+  Map<String, Object?>? _parseRules(String raw) {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) return decoded.cast<String, Object?>();
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Sends today's analysis a local notification, so a signal found while the
+  /// app was in the background is not lost.
+  Future<void> _notifySignal(TradeSignal signal) async {
+    final settings = ref.read(appSettingsProvider).valueOrNull;
+    if (settings == null || !settings.notifications) return;
+    final body = signal.direction == 'no_trade'
+        ? '${signal.symbol}: no trade — ${signal.reason}'
+        : '${signal.symbol} ${signal.direction.toUpperCase()} · '
+            '${signal.confidence}% confidence';
+    await ref.read(notifierProvider).show(
+          title: 'New signal',
+          body: body,
+        );
   }
 
   Future<void> _addWatch() async {
@@ -227,6 +298,7 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     final strategies = ref.watch(strategiesProvider);
     final signals = ref.watch(signalsProvider);
     final watchlist = ref.watch(watchlistProvider);
+    final settings = ref.watch(appSettingsProvider).valueOrNull ?? AppSettings();
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
@@ -256,7 +328,8 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
           subtitle: 'Your rules, as JSON. The vision model judges the chart '
               'against exactly these.',
           trailing: IconButton(
-            onPressed: _addStrategy,
+            tooltip: 'New strategy',
+            onPressed: () => _strategyDialog(),
             icon: const Icon(Icons.add_circle_outline),
           ),
           child: strategies.when(
@@ -276,6 +349,15 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
                     _StrategyTile(
                       strategy: strategy,
                       disabled: _running,
+                      isDefault: settings.defaultStrategyId == strategy.id,
+                      onSetDefault: () => ref
+                          .read(appSettingsProvider.notifier)
+                          .patch(
+                            (current) => current.copyWith(
+                              defaultStrategyId: strategy.id,
+                            ),
+                          ),
+                      onEdit: () => _strategyDialog(existing: strategy),
                       onAnalyze: () => _analyze(strategy),
                       onOpenChart: () async {
                         final config = await ref.read(aiConfigProvider.future);
@@ -414,6 +496,9 @@ class _StrategyTile extends StatelessWidget {
     required this.onAnalyze,
     required this.onOpenChart,
     required this.onDelete,
+    required this.onEdit,
+    required this.onSetDefault,
+    required this.isDefault,
     required this.disabled,
   });
 
@@ -421,6 +506,9 @@ class _StrategyTile extends StatelessWidget {
   final VoidCallback onAnalyze;
   final VoidCallback onOpenChart;
   final VoidCallback onDelete;
+  final VoidCallback onEdit;
+  final VoidCallback onSetDefault;
+  final bool isDefault;
   final bool disabled;
 
   @override
@@ -434,15 +522,42 @@ class _StrategyTile extends StatelessWidget {
           Row(
             children: [
               Expanded(
-                child: Text(
-                  strategy.name,
-                  style: theme.textTheme.titleSmall
-                      ?.copyWith(fontWeight: FontWeight.w700),
+                child: Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        strategy.name,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleSmall
+                            ?.copyWith(fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                    if (isDefault)
+                      const Padding(
+                        padding: EdgeInsets.only(left: 8),
+                        child: StatusPill(
+                          label: 'default',
+                          color: MyBotTheme.accent,
+                        ),
+                      ),
+                  ],
                 ),
               ),
-              IconButton(
-                onPressed: onDelete,
-                icon: const Icon(Icons.delete_outline, size: 18),
+              PopupMenuButton<String>(
+                onSelected: (value) {
+                  if (value == 'edit') onEdit();
+                  if (value == 'default') onSetDefault();
+                  if (value == 'delete') onDelete();
+                },
+                itemBuilder: (context) => [
+                  const PopupMenuItem(value: 'edit', child: Text('Edit rules')),
+                  if (!isDefault)
+                    const PopupMenuItem(
+                      value: 'default',
+                      child: Text('Use as default'),
+                    ),
+                  const PopupMenuItem(value: 'delete', child: Text('Delete')),
+                ],
               ),
             ],
           ),

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models.dart';
@@ -119,6 +120,8 @@ class _LogTile extends StatelessWidget {
     };
     return Card(
       child: ListTile(
+        // Three-line rows plus a trailing pill overflow on a narrow phone.
+        isThreeLine: true,
         title: Text(
           '${log.app} · ${log.action}',
           style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
@@ -168,7 +171,9 @@ class _LogTile extends StatelessWidget {
             const SizedBox(height: 8),
             Text('Model: ${log.model}'),
             Text('Status: ${log.status}'),
-            Text('When: ${log.createdAt}'),
+            Text(
+              'When: ${DateFormat('d MMM yyyy · HH:mm').format(log.createdAt.toLocal())}',
+            ),
             if (log.detail.isNotEmpty) ...[
               const SizedBox(height: 8),
               Text(log.detail),

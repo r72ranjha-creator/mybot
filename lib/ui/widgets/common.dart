@@ -52,7 +52,7 @@ class SectionCard extends StatelessWidget {
                       ],
                     ),
                   ),
-                  if (trailing != null) trailing!,
+                  ?trailing,
                 ],
               ),
             if (title != null) const SizedBox(height: 12),

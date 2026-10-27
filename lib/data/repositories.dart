@@ -28,6 +28,12 @@ class ChatRepository {
 
   Future<void> clear() async {
     final db = await _db.database;
+    // Attachment links and the full-text index are part of the history too:
+    // leaving them behind would let a "deleted" chat still answer an internal
+    // search, which is a privacy bug, not a leaky cleanup.
+    await db.delete('chat_attachments');
+    await db.delete('internal_fts',
+        where: 'source_kind = ?', whereArgs: ['chat']);
     await db.delete('chat_messages');
   }
 }
@@ -274,6 +280,22 @@ class UsageRepository {
     final db = await _db.database;
     await db.insert('usage', entry.toMap(),
         conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  /// Tokens spent since local midnight — what the daily budget guard checks.
+  /// [role] narrows it to one bot; null means the whole device.
+  Future<int> tokensToday({String? role}) async {
+    final db = await _db.database;
+    final midnight = DateTime.now();
+    final start = DateTime(midnight.year, midnight.month, midnight.day)
+        .millisecondsSinceEpoch;
+    final rows = await db.rawQuery(
+      'SELECT COALESCE(SUM(input_tokens),0) + COALESCE(SUM(output_tokens),0) '
+      'AS tokens FROM usage WHERE created_at >= ?'
+      '${role == null ? '' : ' AND role = ?'}',
+      role == null ? [start] : [start, role],
+    );
+    return (rows.first['tokens'] as num?)?.toInt() ?? 0;
   }
 
   Future<Map<String, int>> totals() async {

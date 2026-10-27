@@ -4,6 +4,9 @@ import 'dart:io';
 import 'package:uuid/uuid.dart';
 
 import '../core/constants.dart';
+import '../core/halt.dart';
+import '../core/plan_resume.dart';
+import '../core/token_budget.dart';
 import '../data/media_models.dart';
 import '../data/models.dart';
 import '../data/repositories.dart';
@@ -72,6 +75,10 @@ class ManagerBot {
   ResearchReport? _lastReport;
   String _projectId = '';
 
+  /// A stop is either persisted from an earlier session or requested live by
+  /// the STOP button while this plan is already running.
+  bool get _stopped => _settings.stopRequested || Halt.requested;
+
   TradingEngine get _trading => TradingEngine(
         repositories: _repos,
         bridge: _bridge,
@@ -93,10 +100,10 @@ class ManagerBot {
     if (trimmed.isEmpty && attachments.isEmpty) {
       return ManagerOutcome(answer: 'Kuch likhein ya photo/awaaz bhejein.');
     }
-    if (_settings.stopRequested) {
-      return ManagerOutcome(
-        answer: 'Stopped. Clear the stop on the Home screen when you want me '
-            'to take commands again.',
+    if (_stopped) {
+      return _say(
+        'Stopped. Clear the stop on the Home screen when you want me to take '
+        'commands again.',
         stopped: true,
       );
     }
@@ -134,7 +141,7 @@ class ManagerBot {
     try {
       plan = await _buildPlan(planInput, history);
     } on LlmException catch (error) {
-      return _fail(error.message);
+      return _say(_friendlyFailure(error.message), failed: true);
     }
 
     if (plan.steps.isEmpty) {
@@ -147,6 +154,15 @@ class ManagerBot {
           risk: RiskLevel.readOnly,
         ),
       );
+    }
+
+    // Budget guard: refuse a plan that obviously cannot fit in what is left of
+    // today's allowance, before a single token is spent on it.
+    final budgetRefusal = await _checkBudget(plan, trimmed);
+    if (budgetRefusal != null) {
+      plan.status = 'refused';
+      await _repos.plans.save(plan);
+      return _say(budgetRefusal, failed: true, plan: plan);
     }
 
     plan.status = 'running';
@@ -169,7 +185,10 @@ class ManagerBot {
   }) async {
     await _repos.approvals.resolve(approval.id, approved ? 'approved' : 'rejected');
 
-    final stepIndex = (approval.payload['stepIndex'] as num?)?.toInt() ?? 0;
+    // `stepIndex` is the position of the step in plan.steps (0 based). Older
+    // builds stored the 1-based step number there, so both shapes are resolved
+    // here instead of silently resuming one step too late.
+    final position = PlanResume.positionFor(plan, approval.payload);
     if (!approved) {
       for (final step in plan.steps) {
         if (step.status == StepStatus.pending || step.status == StepStatus.blocked) {
@@ -178,16 +197,26 @@ class ManagerBot {
       }
       plan.status = 'cancelled';
       await _repos.plans.save(plan);
-      return ManagerOutcome(
-        answer: 'Cancelled. Nothing was changed on your phone.',
+      return _say(
+        'Cancelled. Nothing was changed on your phone.',
         plan: plan,
       );
     }
 
-    if (_settings.stopRequested) {
+    if (_stopped) {
       plan.status = 'stopped';
       await _repos.plans.save(plan);
-      return ManagerOutcome(answer: 'Stopped.', plan: plan, stopped: true);
+      return _say('Stopped.', plan: plan, stopped: true);
+    }
+
+    if (position == null) {
+      plan.status = 'failed';
+      await _repos.plans.save(plan);
+      return _say(
+        'That step is no longer part of the plan, so nothing was run.',
+        plan: plan,
+        failed: true,
+      );
     }
 
     plan.status = 'running';
@@ -195,8 +224,8 @@ class ManagerBot {
 
     return _executeFrom(
       plan: plan,
-      startIndex: stepIndex,
-      approvedIndexes: {stepIndex},
+      startIndex: position,
+      approvedIndexes: {plan.steps[position].index},
       results: <String>[],
       original: plan.intent,
     );
@@ -211,8 +240,15 @@ class ManagerBot {
         .map((m) => '${m.role}: ${m.content}')
         .join('\n');
 
+    final project =
+        _projectId.isEmpty ? null : await _repos.projects.byId(_projectId);
+    final projectInstructions = project?.instructions.trim() ?? '';
+
     var intent = input;
-    var language = 'en';
+    // The Language setting in Settings wins over detection; "auto" lets the
+    // parser decide from the sentence itself.
+    var language = _settings.language == 'auto' ? 'en' : _settings.language;
+    final forcedLanguage = _settings.language != 'auto';
     try {
       final parsed = await _llm.complete(
         config: _config,
@@ -234,9 +270,10 @@ class ManagerBot {
         final parsedIntent = (json['intent'] as String?)?.trim();
         if (parsedIntent != null && parsedIntent.isNotEmpty) intent = parsedIntent;
         final parsedLanguage = (json['language'] as String?)?.trim();
-        if (parsedLanguage == 'ur' ||
-            parsedLanguage == 'roman_ur' ||
-            parsedLanguage == 'en') {
+        if (!forcedLanguage &&
+            (parsedLanguage == 'ur' ||
+                parsedLanguage == 'roman_ur' ||
+                parsedLanguage == 'en')) {
           language = parsedLanguage!;
         }
       }
@@ -254,7 +291,8 @@ class ManagerBot {
         LlmMessage(
           role: 'user',
           text: 'Intent: $intent\nRaw command: $input\nLanguage: $language\n'
-              '${context.isEmpty ? '' : 'Recent context:\n$context\n'}',
+              '${context.isEmpty ? '' : 'Recent context:\n$context\n'}'
+              '${projectInstructions.isEmpty ? '' : 'Project instructions (follow these): $projectInstructions\n'}',
         ),
       ],
       jsonMode: true,
@@ -304,18 +342,29 @@ class ManagerBot {
     required List<String> results,
     required String original,
   }) async {
+    // Resuming after an approval starts mid-plan: the steps that already ran
+    // still contribute their results to the merged answer.
+    if (results.isEmpty && startIndex > 0) {
+      for (var i = 0; i < startIndex && i < plan.steps.length; i++) {
+        final done = plan.steps[i];
+        if (done.status == StepStatus.done && done.result.isNotEmpty) {
+          results.add(done.result);
+        }
+      }
+    }
+
     for (var i = startIndex; i < plan.steps.length; i++) {
       final step = plan.steps[i];
       if (step.status == StepStatus.done) {
         if (step.result.isNotEmpty) results.add(step.result);
         continue;
       }
-      if (_settings.stopRequested) {
+      if (_stopped) {
         step.status = StepStatus.skipped;
         plan.status = 'stopped';
         await _repos.plans.save(plan);
-        return ManagerOutcome(
-          answer: 'Stopped at step ${step.index}. Nothing else ran.',
+        return _say(
+          'Stopped at step ${step.index}. Nothing else ran.',
           plan: plan,
           stopped: true,
         );
@@ -327,9 +376,9 @@ class ManagerBot {
         plan.status = 'awaiting_approval';
         await _repos.plans.save(plan);
         final approval = await _createApproval(plan, step);
-        return ManagerOutcome(
-          answer: 'I need your okay before step ${step.index}: '
-              '${_describeStep(step)}.\n\n${_whySensitive(step)}',
+        return _say(
+          'I need your okay before step ${step.index}: '
+          '${_describeStep(step)}.\n\n${_whySensitive(step)}',
           plan: plan,
           pending: approval,
         );
@@ -349,8 +398,8 @@ class ManagerBot {
         step.status = StepStatus.skipped;
         plan.status = 'stopped';
         await _repos.plans.save(plan);
-        return ManagerOutcome(
-          answer: 'Stopped at step ${step.index}.',
+        return _say(
+          'Stopped at step ${step.index}.',
           plan: plan,
           stopped: true,
         );
@@ -401,7 +450,7 @@ class ManagerBot {
   }
 
   Future<String> _dispatch(PlanStep step, List<String> prior) async {
-    if (_settings.stopRequested) throw ManagerStop();
+    if (_stopped) throw ManagerStop();
 
     // Actions that are not tied to a single bot role are handled first, so the
     // planner can attach them to whichever role fits the sentence.
@@ -625,16 +674,94 @@ class ManagerBot {
       detail: '${_whySensitive(step)}\n\nThe rest of the plan waits until you decide.',
       payload: {
         'planId': plan.id,
-        'stepIndex': step.index,
+        // 0-based position in plan.steps — what the executor resumes from.
+        'stepIndex': plan.steps.indexOf(step),
+        // 1-based number the user sees, and what an older payload may hold.
+        'stepNumber': step.index,
         'bot': step.bot,
         'action': step.action,
         'target': step.target,
       },
-      screenshotPath: null,
+      screenshotPath: await _approvalScreenshot(step),
       createdAt: DateTime.now(),
     );
     await _repos.approvals.create(approval);
     return approval;
+  }
+
+  /// The Approvals screen tells the user to check the screenshot before they
+  /// decide, so a step that acts on the phone gets one taken here.
+  Future<String?> _approvalScreenshot(PlanStep step) async {
+    final touchesScreen =
+        step.bot == BotRole.screenAgent || step.action == 'tap_trade_button';
+    if (!touchesScreen) return null;
+    try {
+      if (!await _bridge.isServiceEnabled()) return null;
+      return await _bridge.screenshotToFile(prefix: 'approval');
+    } catch (_) {
+      // No screenshot is not a reason to block the approval itself.
+      return null;
+    }
+  }
+
+  /// Persist an answer that ends the turn early (approval, stop, refusal) so
+  /// the chat transcript still explains what happened after a restart.
+  Future<ManagerOutcome> _say(
+    String answer, {
+    TaskPlan? plan,
+    ApprovalRequest? pending,
+    bool stopped = false,
+    bool failed = false,
+    ResearchReport? report,
+  }) async {
+    await _repos.chat.add(
+      ChatMessage(
+        id: _uuid.v4(),
+        role: 'assistant',
+        content: answer,
+        planId: plan?.id,
+        createdAt: DateTime.now(),
+      ),
+    );
+    return ManagerOutcome(
+      answer: answer,
+      plan: plan,
+      pending: pending,
+      stopped: stopped,
+      failed: failed,
+      report: report,
+    );
+  }
+
+  /// Null when the plan fits, otherwise the one-line reason it was refused.
+  Future<String?> _checkBudget(TaskPlan plan, String input) async {
+    final budget =
+        TokenBudget.decode(await _repos.settings.get(TokenBudget.storageKey));
+    if (budget.isOff) return null;
+
+    final estimate = estimatePlanTokens(
+      input,
+      plan.steps.map((step) => '${step.action} ${step.target}').toList(),
+    );
+    final roles = <String>{
+      BotRole.manager,
+      ...plan.steps.map((step) => step.bot),
+    };
+    // Each role is checked against an equal share: the plan spends across the
+    // bots, so no single role should be asked to cover all of it.
+    final share = (estimate / roles.length).ceil();
+    for (final role in roles) {
+      if (budget.isUnlimited(role)) continue;
+      final used = await _repos.usage.tokensToday(role: role);
+      final decision =
+          budget.check(role, usedToday: used, estimatedTokens: share);
+      if (!decision.allowed) {
+        final label = BotRole.labels[role] ?? role;
+        return 'Aaj ka token budget khatam ho raha hai. ${decision.reason} '
+            'Budget barhane ke liye More > AI settings kholein (${label} bot).';
+      }
+    }
+    return null;
   }
 
   Future<void> _writeLog(PlanStep step, String status, String detail) async {
@@ -724,12 +851,12 @@ class ManagerBot {
         _ => 'English',
       };
 
-  ManagerOutcome _fail(String message) {
-    final friendly = message.contains('No model answered')
-        ? 'I have no working model yet. Add a provider key in AI Settings and '
-            'I can start taking commands.'
-        : message;
-    return ManagerOutcome(answer: friendly, failed: true);
+  String _friendlyFailure(String message) {
+    if (message.contains('No model answered')) {
+      return 'I have no working model yet. Add a provider key in AI Settings '
+          'and I can start taking commands.';
+    }
+    return message;
   }
 
   // ------------------------------------------------------- media & research
@@ -854,11 +981,17 @@ class ManagerBot {
     final flag = step.params['crypto'];
     final cryptoMode = crypto || flag == true || flag == 'true';
 
+    // A project's instructions are part of its contract with the user: they
+    // must reach the writer, not only the planner.
+    final project =
+        _projectId.isEmpty ? null : await _repos.projects.byId(_projectId);
+
     final report = await engine.run(
       question: question,
       mode: mode,
       cryptoMode: cryptoMode,
       projectId: _projectId.isEmpty ? null : _projectId,
+      projectInstructions: project?.instructions,
       onProgress: (stage) => _onProgress?.call(stage),
     );
     _lastReport = report;

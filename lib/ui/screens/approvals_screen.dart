@@ -8,14 +8,34 @@ import '../../state/providers.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 
-class ApprovalsScreen extends ConsumerWidget {
+class ApprovalsScreen extends ConsumerStatefulWidget {
   const ApprovalsScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ApprovalsScreen> createState() => _ApprovalsScreenState();
+}
+
+class _ApprovalsScreenState extends ConsumerState<ApprovalsScreen> {
+  /// Loaded once per decision, not once per rebuild: a future built inside
+  /// build() re-fetches on every repaint.
+  Future<List<ApprovalRequest>>? _history;
+
+  @override
+  void initState() {
+    super.initState();
+    _reloadHistory();
+  }
+
+  void _reloadHistory() {
+    setState(() {
+      _history = ref.read(repositoriesProvider).approvals.recent(limit: 15);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final pending = ref.watch(pendingApprovalsProvider);
-    final recent = ref.watch(repositoriesProvider).approvals;
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
@@ -58,12 +78,14 @@ class ApprovalsScreen extends ConsumerWidget {
                             .read(chatControllerProvider.notifier)
                             .decide(request, true);
                         ref.invalidate(pendingApprovalsProvider);
+                        _reloadHistory();
                       },
                       onReject: () async {
                         await ref
                             .read(chatControllerProvider.notifier)
                             .decide(request, false);
                         ref.invalidate(pendingApprovalsProvider);
+                        _reloadHistory();
                       },
                     ),
                   ),
@@ -73,7 +95,7 @@ class ApprovalsScreen extends ConsumerWidget {
         ),
         const SizedBox(height: 8),
         FutureBuilder<List<ApprovalRequest>>(
-          future: recent.recent(limit: 15),
+          future: _history,
           builder: (context, snapshot) {
             final items = snapshot.data ?? const <ApprovalRequest>[];
             final resolved =

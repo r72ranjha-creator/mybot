@@ -96,7 +96,6 @@ class A11yController(
                 "home" -> result.success(service()?.home() ?: false)
                 "recents" -> result.success(service()?.recents() ?: false)
                 "screenshot" -> result.success(service()?.screenshotBase64())
-                "pendingIntent" -> result.success(false)
                 else -> result.notImplemented()
             }
         } catch (t: Throwable) {

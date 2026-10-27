@@ -64,19 +64,28 @@ class SttService {
     final completer = _VoiceCompleter();
 
     await _speech.listen(
-      localeId: locale,
-      listenFor: const Duration(seconds: 60),
-      pauseFor: const Duration(seconds: 3),
-      partialResults: true,
-      cancelOnError: true,
+      listenOptions: SpeechListenOptions(
+        localeId: locale,
+        listenFor: const Duration(seconds: 60),
+        pauseFor: const Duration(seconds: 3),
+        partialResults: true,
+        cancelOnError: true,
+      ),
       onResult: (SpeechRecognitionResult result) {
         final text = result.recognizedWords;
         onPartial?.call(text);
         if (result.finalResult) completer.finish(text);
       },
     );
-
-    final text = await completer.future;
+    // A recogniser that stops on silence without a final result used to leave
+    // the mic "listening" forever; this is the backstop.
+    final text = await completer.future.timeout(
+      const Duration(seconds: 64),
+      onTimeout: () async {
+        await _speech.stop();
+        return '';
+      },
+    );
     return text.trim();
   }
 

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../agent/ai_config.dart';
 import '../../core/constants.dart';
+import '../../core/token_budget.dart';
 import '../../data/models.dart';
 import '../../agent/research/search_client.dart';
 import '../../state/providers.dart';
@@ -213,6 +214,8 @@ class _AiSettingsScreenState extends ConsumerState<AiSettingsScreen> {
             ),
           ),
           const SizedBox(height: 12),
+          _TokenBudgetCard(),
+          const SizedBox(height: 12),
           SectionCard(
             title: 'Providers',
             subtitle: 'Add a key for at least one. Keys stay on this phone.',
@@ -322,6 +325,125 @@ class _AiSettingsScreenState extends ConsumerState<AiSettingsScreen> {
                 ),
               ],
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Daily ceilings. Off by default; a plan that cannot fit is refused before a
+/// single call is made, and today's spend is shown next to the limit.
+class _TokenBudgetCard extends ConsumerWidget {
+  const _TokenBudgetCard();
+
+  Future<void> _edit(
+    BuildContext context,
+    WidgetRef ref, {
+    required String label,
+    required int current,
+    required Future<void> Function(int) save,
+  }) async {
+    final controller = TextEditingController(
+      text: current <= 0 ? '' : '$current',
+    );
+    final value = await showDialog<int>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('$label · daily tokens'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(
+            labelText: 'Tokens per day',
+            hintText: '0 or empty = no limit',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(
+              int.tryParse(controller.text.trim()) ?? 0,
+            ),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (value == null) return;
+    await save(value);
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final budget = ref.watch(tokenBudgetProvider).valueOrNull ?? TokenBudget.off;
+    final usedToday = ref.watch(tokensTodayProvider).valueOrNull ?? 0;
+
+    return SectionCard(
+      title: 'Daily token budget',
+      subtitle: budget.isOff
+          ? 'No limit set. Add one to stop a runaway plan on an expensive model.'
+          : 'Today: $usedToday tokens used. A plan that will not fit is refused '
+              'before it starts.',
+      child: Column(
+        children: [
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('All bots'),
+            subtitle: Text(
+              budget.defaultDaily <= 0
+                  ? 'No limit'
+                  : '${budget.defaultDaily} tokens per day',
+              style: theme.textTheme.bodySmall,
+            ),
+            trailing: const Icon(Icons.edit_outlined, size: 18),
+            onTap: () => _edit(
+              context,
+              ref,
+              label: 'All bots',
+              current: budget.defaultDaily,
+              save: (value) =>
+                  ref.read(tokenBudgetProvider.notifier).setDefaultDaily(value),
+            ),
+          ),
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            childrenPadding: const EdgeInsets.only(bottom: 4),
+            title: const Text('Per-bot ceilings'),
+            subtitle: Text(
+              'Optional per-role overrides',
+              style: theme.textTheme.bodySmall,
+            ),
+            children: [
+              for (final role in BotRole.all)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  title: Text(BotRole.labels[role] ?? role),
+                  subtitle: Text(
+                    budget.perRole[role] == null
+                        ? 'Uses the ceiling above'
+                        : '${budget.perRole[role]} tokens per day',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  trailing: const Icon(Icons.edit_outlined, size: 16),
+                  onTap: () => _edit(
+                    context,
+                    ref,
+                    label: BotRole.labels[role] ?? role,
+                    current: budget.perRole[role] ?? 0,
+                    save: (value) => ref
+                        .read(tokenBudgetProvider.notifier)
+                        .setRoleDaily(role, value),
+                  ),
+                ),
+            ],
           ),
         ],
       ),

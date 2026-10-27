@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../state/providers.dart';
 import '../theme.dart';
+import 'ai_settings_screen.dart';
 import '../widgets/common.dart';
 
 class OnboardingScreen extends ConsumerStatefulWidget {
@@ -120,12 +121,12 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                           onPressed: () {
                             Navigator.of(context).push(
                               MaterialPageRoute(
-                                builder: (_) => const _KeysShortcut(),
+                                builder: (_) => const AiSettingsScreen(),
                               ),
                             );
                           },
                           icon: const Icon(Icons.tune, size: 16),
-                          label: const Text('Open AI settings later'),
+                          label: const Text('Add keys now'),
                         ),
                       ],
                     ),
@@ -193,7 +194,8 @@ class _Slide extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Padding(
+    // Short screens (and a large font scale) must not clip the slide.
+    return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(28, 40, 28, 8),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -220,25 +222,6 @@ class _Slide extends StatelessWidget {
             trailing!,
           ],
         ],
-      ),
-    );
-  }
-}
-
-class _KeysShortcut extends StatelessWidget {
-  const _KeysShortcut();
-
-  @override
-  Widget build(BuildContext context) {
-    return const Scaffold(
-      body: Center(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Text(
-            'Open More > AI settings after onboarding to add your keys.',
-            textAlign: TextAlign.center,
-          ),
-        ),
       ),
     );
   }

@@ -96,6 +96,33 @@ class MediaPipeline {
     }
   }
 
+  /// MIME by extension. A file used to be labelled with its extension
+  /// ("pdf" instead of "application/pdf"), which no model or share sheet reads
+  /// as a type.
+  static String? mimeForPath(String path) {
+    final ext = p.extension(path).toLowerCase().replaceFirst('.', '');
+    return switch (ext) {
+      'pdf' => 'application/pdf',
+      'png' => 'image/png',
+      'jpg' || 'jpeg' => 'image/jpeg',
+      'webp' => 'image/webp',
+      'heic' => 'image/heic',
+      'gif' => 'image/gif',
+      'txt' => 'text/plain',
+      'md' => 'text/markdown',
+      'csv' => 'text/csv',
+      'json' => 'application/json',
+      'xls' => 'application/vnd.ms-excel',
+      'xlsx' =>
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'mp4' => 'video/mp4',
+      'm4a' => 'audio/mp4',
+      'mp3' => 'audio/mpeg',
+      'wav' => 'audio/wav',
+      _ => null,
+    };
+  }
+
   /// The model only ever needs a sane image; give it one and say so.
   String describe(MediaFile file) {
     final parts = <String>[file.kind.id, file.sizeLabel];

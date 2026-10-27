@@ -5,6 +5,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../../data/media_models.dart';
 import '../../data/research_models.dart';
+import '../../media/media_pipeline.dart';
 import '../../state/providers.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
@@ -23,6 +24,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final List<MediaFile> _attachments = [];
   bool _listening = false;
   bool _importing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // The mute switch is a setting, so it must survive a restart.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final settings = await ref.read(appSettingsProvider.future);
+      ref.read(ttsProvider).setMuted(settings.voiceMuted);
+      if (mounted) setState(() {});
+    });
+  }
 
   @override
   void dispose() {
@@ -55,18 +67,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           projectId: projectId,
         );
     _scrollToEnd();
-    final report = ref.read(chatControllerProvider).report;
-    final messages = ref.read(chatControllerProvider).messages;
-    final reply = messages.isEmpty ? null : messages.last;
-    if (reply != null && !reply.isUser) {
-      final muted = ref.read(ttsProvider).muted;
-      if (!muted) {
-        await ref.read(ttsProvider).speak(reply.content);
-      }
-      if (report != null && report.isUncited) {
-        // Nothing to speak; the UI already shows the badge.
-      }
-    }
+    // Only an answer is worth reading aloud — never the user's own message, and
+    // never an error that is already on screen.
+    final chat = ref.read(chatControllerProvider);
+    if (chat.lastFailed) return;
+    final reply = chat.messages.isEmpty
+        ? null
+        : chat.messages.lastWhere(
+            (message) => !message.isUser,
+            orElse: () => chat.messages.last,
+          );
+    if (reply == null || reply.isUser) return;
+    if (ref.read(ttsProvider).muted) return;
+    await ref.read(ttsProvider).speak(reply.content, languageCode: chat.language);
   }
 
   Future<void> _pickPhoto({bool camera = false}) async {
@@ -94,7 +107,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         final media = await pipeline.importPath(
           file.path,
           kind: MediaKind.photo,
-          mime: 'image/jpeg',
+          mime: MediaPipeline.mimeForPath(file.path),
+          projectId: ref.read(activeProjectProvider),
         );
         if (mounted) setState(() => _attachments.add(media));
       }
@@ -121,7 +135,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         final media = await pipeline.importPath(
           file.path,
           kind: MediaKind.file,
-          mime: file.name.split('.').last,
+          mime: MediaPipeline.mimeForPath(file.name),
+          projectId: ref.read(activeProjectProvider),
         );
         if (mounted) setState(() => _attachments.add(media));
       }
@@ -175,7 +190,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           ? throw StateError('no reply yet')
           : messages.last,
     );
-    await tts.speak(last.content);
+    await tts.speak(
+      last.content,
+      languageCode: ref.read(chatControllerProvider).language,
+    );
     final warning = tts.warning;
     if (warning != null && mounted) {
       ScaffoldMessenger.of(context)
@@ -331,7 +349,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             attachments: _attachments,
             listening: _listening,
             importing: _importing,
-            projectName: project,
             onRemove: (media) => setState(() => _attachments.remove(media)),
           ),
         SafeArea(
@@ -354,7 +371,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         padding: const EdgeInsets.only(right: 4),
                         child: ActionChip(
                           avatar: const Icon(Icons.folder_outlined, size: 16),
-                          label: const Text('Project'),
+                          tooltip: 'Project band karein',
+                          label: Text(
+                            _projectName(ref, project),
+                            overflow: TextOverflow.ellipsis,
+                          ),
                           onPressed: () => ref
                               .read(activeProjectProvider.notifier)
                               .state = null,
@@ -401,6 +422,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 }
 
+String _projectName(WidgetRef ref, String projectId) {
+  final projects = ref.watch(projectsProvider).valueOrNull ?? const [];
+  for (final project in projects) {
+    if (project.id == projectId) return project.name;
+  }
+  return 'Project';
+}
+
 class _ResearchMenu extends StatelessWidget {
   const _ResearchMenu({required this.onSelected});
 
@@ -441,14 +470,12 @@ class _PreviewStrip extends StatelessWidget {
     required this.attachments,
     required this.listening,
     required this.importing,
-    required this.projectName,
     required this.onRemove,
   });
 
   final List<MediaFile> attachments;
   final bool listening;
   final bool importing;
-  final String? projectName;
   final void Function(MediaFile media) onRemove;
 
   @override

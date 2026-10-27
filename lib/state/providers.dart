@@ -7,6 +7,8 @@ import '../agent/ai_config.dart';
 import '../agent/llm_client.dart';
 import '../agent/manager_bot.dart';
 import '../agent/research/research_engine.dart';
+import '../core/halt.dart';
+import '../core/token_budget.dart';
 import '../data/db.dart';
 import '../data/media_models.dart';
 import '../data/models.dart';
@@ -15,6 +17,7 @@ import '../data/research_models.dart';
 import '../data/secure_store.dart';
 import '../media/media_pipeline.dart';
 import '../platform/automation_bridge.dart';
+import '../platform/notifier.dart';
 import '../voice/stt_service.dart';
 import '../voice/tts_service.dart';
 
@@ -45,6 +48,8 @@ final ttsProvider = Provider<TtsService>((ref) => TtsService());
 final mediaPipelineProvider = Provider<MediaPipeline>(
   (ref) => MediaPipeline(repositories: ref.watch(repositoriesProvider)),
 );
+
+final notifierProvider = Provider<LocalNotifier>((ref) => LocalNotifier());
 
 /// Which project the composer is scoped to, if any.
 final activeProjectProvider = StateProvider<String?>((ref) => null);
@@ -117,12 +122,19 @@ class AppSettingsNotifier extends AsyncNotifier<AppSettings> {
   Future<AppSettings> build() async {
     final repos = ref.watch(repositoriesProvider);
     final raw = await repos.settings.get(AppSettings.storageKey);
-    if (raw == null || raw.trim().isEmpty) return AppSettings();
+    if (raw == null || raw.trim().isEmpty) {
+      Halt.restore(false);
+      return AppSettings();
+    }
     try {
-      return AppSettings.fromJson(
+      final settings = AppSettings.fromJson(
         (jsonDecodeMap(raw)).cast<String, Object?>(),
       );
+      // Restore the safety state before the first command can be handled.
+      Halt.restore(settings.stopRequested);
+      return settings;
     } catch (_) {
+      Halt.restore(false);
       return AppSettings();
     }
   }
@@ -133,6 +145,7 @@ class AppSettingsNotifier extends AsyncNotifier<AppSettings> {
       AppSettings.storageKey,
       encodeJson(settings.toJson()),
     );
+    Halt.restore(settings.stopRequested);
     state = AsyncData(settings);
   }
 
@@ -148,6 +161,52 @@ class AppSettingsNotifier extends AsyncNotifier<AppSettings> {
 final appSettingsProvider =
     AsyncNotifierProvider<AppSettingsNotifier, AppSettings>(
   AppSettingsNotifier.new,
+);
+
+// ------------------------------------------------------------------- budget
+
+/// Daily token ceilings. Stored separately from the rest of the settings so a
+/// budget reset never touches routing or keys.
+class TokenBudgetNotifier extends AsyncNotifier<TokenBudget> {
+  @override
+  Future<TokenBudget> build() async {
+    final raw = await ref
+        .watch(repositoriesProvider)
+        .settings
+        .get(TokenBudget.storageKey);
+    return TokenBudget.decode(raw);
+  }
+
+  Future<void> _persist(TokenBudget budget) async {
+    await ref
+        .read(repositoriesProvider)
+        .settings
+        .put(TokenBudget.storageKey, budget.encode());
+    state = AsyncData(budget);
+  }
+
+  Future<void> setDefaultDaily(int tokens) async {
+    final current = await future;
+    await _persist(
+      TokenBudget(perRole: current.perRole, defaultDaily: tokens),
+    );
+  }
+
+  Future<void> setRoleDaily(String role, int tokens) async {
+    final current = await future;
+    await _persist(current.withRole(role, tokens));
+  }
+
+  Future<void> clear() async => _persist(TokenBudget.off);
+}
+
+final tokenBudgetProvider =
+    AsyncNotifierProvider<TokenBudgetNotifier, TokenBudget>(
+  TokenBudgetNotifier.new,
+);
+
+final tokensTodayProvider = FutureProvider<int>(
+  (ref) => ref.watch(repositoriesProvider).usage.tokensToday(),
 );
 
 // --------------------------------------------------------------- live data
@@ -206,6 +265,7 @@ class ChatState {
     this.pendingApproval,
     this.lastFailed = false,
     this.report,
+    this.language = 'en',
   });
 
   final List<ChatMessage> messages;
@@ -215,7 +275,10 @@ class ChatState {
   final bool lastFailed;
   final ResearchReport? report;
 
-  static final empty = ChatState();
+  /// Language of the last reply, so it is read aloud with a matching voice.
+  final String language;
+
+  static final ChatState empty = ChatState();
 
   ChatState copyWith({
     List<ChatMessage>? messages,
@@ -227,6 +290,7 @@ class ChatState {
     bool? lastFailed,
     ResearchReport? report,
     bool clearReport = false,
+    String? language,
   }) =>
       ChatState(
         messages: messages ?? this.messages,
@@ -236,6 +300,7 @@ class ChatState {
             clearApproval ? null : (pendingApproval ?? this.pendingApproval),
         lastFailed: lastFailed ?? this.lastFailed,
         report: clearReport ? null : (report ?? this.report),
+        language: language ?? this.language,
       );
 }
 
@@ -305,8 +370,17 @@ class ChatController extends Notifier<ChatState> {
         lastFailed: outcome.failed,
         report: outcome.report,
         clearReport: outcome.report == null,
+        language: outcome.plan?.language,
       );
       _refreshCounters();
+      if (outcome.pending != null && settings.notifications) {
+        // The approval may have been requested while the user was elsewhere.
+        await ref.read(notifierProvider).show(
+              title: 'Approval needed',
+              body: outcome.pending!.title,
+            );
+        ref.invalidate(pendingApprovalsProvider);
+      }
     } catch (error) {
       state = state.copyWith(
         busy: false,
@@ -367,21 +441,43 @@ class ChatController extends Notifier<ChatState> {
         clearStatus: true,
         messages: refreshed,
         pendingApproval: outcome.pending,
+        lastFailed: outcome.failed,
+        language: outcome.plan?.language,
       );
       _refreshCounters();
     } catch (error) {
-      state = state.copyWith(busy: false, clearStatus: true);
+      // A failed approval must say so: silence left the user staring at a
+      // screen where nothing had happened and nothing explained why.
+      state = state.copyWith(
+        busy: false,
+        clearStatus: true,
+        lastFailed: true,
+        messages: [
+          ...state.messages,
+          ChatMessage(
+            id: 'err-${DateTime.now().microsecondsSinceEpoch}',
+            role: 'assistant',
+            content: 'Could not finish that step: $error',
+            createdAt: DateTime.now(),
+          ),
+        ],
+      );
+      _refreshCounters();
     }
   }
 
   /// The STOP button on Home: freeze the current plan and refuse new work.
   Future<void> stopEverything() async {
+    // Set the live flag first: a plan that is running right now checks it
+    // before its next step.
+    Halt.request();
     await ref.read(appSettingsProvider.notifier).setStop(true);
     state = state.copyWith(status: 'Stopped', busy: false, clearApproval: true);
     _refreshCounters();
   }
 
   Future<void> releaseStop() async {
+    Halt.clear();
     await ref.read(appSettingsProvider.notifier).setStop(false);
     state = state.copyWith(clearStatus: true);
   }

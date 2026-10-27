@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
@@ -85,6 +86,15 @@ class ProjectsScreen extends ConsumerWidget {
                             project.id;
                         ref.read(selectedTabProvider.notifier).state = 1;
                         Navigator.of(context).pop();
+                      } else if (value == 'edit') {
+                        await _create(context, ref, existing: project);
+                      } else if (value == 'reports') {
+                        await Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) =>
+                                ResearchReportsScreen(projectId: project.id),
+                          ),
+                        );
                       } else if (value == 'delete') {
                         await ref
                             .read(repositoriesProvider)
@@ -98,6 +108,14 @@ class ProjectsScreen extends ConsumerWidget {
                     },
                     itemBuilder: (context) => const [
                       PopupMenuItem(value: 'chat', child: Text('Open in chat')),
+                      PopupMenuItem(
+                        value: 'reports',
+                        child: Text('Reports and sources'),
+                      ),
+                      PopupMenuItem(
+                        value: 'edit',
+                        child: Text('Edit name and instructions'),
+                      ),
                       PopupMenuItem(value: 'delete', child: Text('Delete')),
                     ],
                   ),
@@ -115,15 +133,20 @@ class ProjectsScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _create(BuildContext context, WidgetRef ref) async {
-    final name = TextEditingController();
-    final description = TextEditingController();
-    final instructions = TextEditingController();
+  Future<void> _create(
+    BuildContext context,
+    WidgetRef ref, {
+    Project? existing,
+  }) async {
+    final name = TextEditingController(text: existing?.name ?? '');
+    final description = TextEditingController(text: existing?.description ?? '');
+    final instructions =
+        TextEditingController(text: existing?.instructions ?? '');
 
     final saved = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Naya project'),
+        title: Text(existing == null ? 'Naya project' : 'Project edit'),
         content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -163,15 +186,21 @@ class ProjectsScreen extends ConsumerWidget {
         ],
       ),
     );
-    if (saved != true || name.text.trim().isEmpty) return;
+    final trimmedName = name.text.trim();
+    final trimmedDescription = description.text.trim();
+    final trimmedInstructions = instructions.text.trim();
+    name.dispose();
+    description.dispose();
+    instructions.dispose();
+    if (saved != true || trimmedName.isEmpty) return;
 
     await ref.read(repositoriesProvider).projects.save(
           Project(
-            id: const Uuid().v4(),
-            name: name.text.trim(),
-            description: description.text.trim(),
-            instructions: instructions.text.trim(),
-            createdAt: DateTime.now(),
+            id: existing?.id ?? const Uuid().v4(),
+            name: trimmedName,
+            description: trimmedDescription,
+            instructions: trimmedInstructions,
+            createdAt: existing?.createdAt ?? DateTime.now(),
           ),
         );
     ref.invalidate(projectsProvider);
@@ -254,17 +283,54 @@ class ResearchReportsScreen extends ConsumerWidget {
   }
 }
 
-class ReportViewScreen extends ConsumerWidget {
+class ReportViewScreen extends ConsumerStatefulWidget {
   const ReportViewScreen({super.key, required this.reportId});
 
   final String reportId;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ReportViewScreen> createState() => _ReportViewScreenState();
+}
+
+class _ReportViewScreenState extends ConsumerState<ReportViewScreen> {
+  late Future<ResearchReport?> _report;
+
+  @override
+  void initState() {
+    super.initState();
+    _report = ref.read(repositoriesProvider).research.byId(widget.reportId);
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Report')),
+      appBar: AppBar(
+        title: const Text('Report'),
+        actions: [
+          FutureBuilder<ResearchReport?>(
+            future: _report,
+            builder: (context, snapshot) {
+              final report = snapshot.data;
+              if (report == null) return const SizedBox.shrink();
+              return IconButton(
+                tooltip: 'Copy report',
+                onPressed: () async {
+                  await Clipboard.setData(
+                    ClipboardData(text: report.bodyMarkdown),
+                  );
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Report copied.')),
+                  );
+                },
+                icon: const Icon(Icons.copy_all_outlined),
+              );
+            },
+          ),
+        ],
+      ),
       body: FutureBuilder<ResearchReport?>(
-        future: ref.read(repositoriesProvider).research.byId(reportId),
+        future: _report,
         builder: (context, snapshot) {
           if (!snapshot.hasData) {
             return const Center(child: CircularProgressIndicator());
