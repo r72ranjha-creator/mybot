@@ -381,6 +381,13 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
                         }
                       },
                       onDelete: () async {
+                        final confirmed = await confirmDestructive(
+                          context,
+                          title: 'Delete "${strategy.name}"?',
+                          message: 'Rules mit jayenge. Purane signals journal '
+                              'mein rahenge.',
+                        );
+                        if (!confirmed) return;
                         await ref
                             .read(repositoriesProvider)
                             .trading

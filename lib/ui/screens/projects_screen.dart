@@ -96,6 +96,13 @@ class ProjectsScreen extends ConsumerWidget {
                           ),
                         );
                       } else if (value == 'delete') {
+                        final confirmed = await confirmDestructive(
+                          context,
+                          title: 'Delete "${project.name}"?',
+                          message: 'Project hat jayega. Us ke reports aur '
+                              'files library mein rahenge.',
+                        );
+                        if (!confirmed) return;
                         await ref
                             .read(repositoriesProvider)
                             .projects

@@ -34,6 +34,13 @@ class _LogsScreenState extends ConsumerState<LogsScreen> {
           IconButton(
             tooltip: 'Clear logs',
             onPressed: () async {
+              final confirmed = await confirmDestructive(
+                context,
+                title: 'Clear logs?',
+                message: 'Activity log delete ho jayega.',
+                action: 'Clear',
+              );
+              if (!confirmed) return;
               await ref.read(repositoriesProvider).logs.clear();
               ref.invalidate(logsProvider);
             },

@@ -284,6 +284,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               ),
               TextButton.icon(
                 onPressed: () async {
+                  final confirmed = await confirmDestructive(
+                    context,
+                    title: 'Clear chat?',
+                    message: 'Poori chat history delete ho jayegi. Reports aur '
+                        'projects safe rahenge.',
+                    action: 'Clear',
+                  );
+                  if (!confirmed) return;
                   await ref.read(repositoriesProvider).chat.clear();
                   await ref.read(chatControllerProvider.notifier).refresh();
                 },

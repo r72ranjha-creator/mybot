@@ -200,3 +200,32 @@ String relativeTime(DateTime time) {
   if (delta.inDays < 7) return '${delta.inDays}d ago';
   return '${time.day}/${time.month}/${time.year}';
 }
+
+/// Ask before anything that cannot be undone. Returns false if the sheet is
+/// dismissed, so "cancel" and "tapped outside" behave the same.
+Future<bool> confirmDestructive(
+  BuildContext context, {
+  required String title,
+  required String message,
+  String action = 'Delete',
+}) async {
+  final result = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(title),
+      content: Text(message),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(backgroundColor: MyBotTheme.danger),
+          onPressed: () => Navigator.of(context).pop(true),
+          child: Text(action),
+        ),
+      ],
+    ),
+  );
+  return result == true;
+}

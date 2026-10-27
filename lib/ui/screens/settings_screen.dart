@@ -262,6 +262,14 @@ class SettingsScreen extends ConsumerWidget {
                   title: const Text('Clear chat history'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () async {
+                    final confirmed = await confirmDestructive(
+                      context,
+                      title: 'Clear chat history?',
+                      message: 'Ye wapas nahi aayegi. Reports aur projects safe '
+                          'rahenge.',
+                      action: 'Clear',
+                    );
+                    if (!confirmed) return;
                     await ref.read(repositoriesProvider).chat.clear();
                     await ref.read(chatControllerProvider.notifier).refresh();
                     if (!context.mounted) return;
@@ -275,6 +283,13 @@ class SettingsScreen extends ConsumerWidget {
                   title: const Text('Clear logs'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () async {
+                    final confirmed = await confirmDestructive(
+                      context,
+                      title: 'Clear logs?',
+                      message: 'Activity log delete ho jayega.',
+                      action: 'Clear',
+                    );
+                    if (!confirmed) return;
                     await ref.read(repositoriesProvider).logs.clear();
                     ref.invalidate(logsProvider);
                     if (!context.mounted) return;
