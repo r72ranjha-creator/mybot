@@ -70,6 +70,32 @@ void main() {
     expect(stored, contains('"language":"en"'));
   });
 
+  test('a tap that lands before the row loads keeps the stored values', () async {
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    await Repositories(AppDatabase.instance).settings.put(
+      AppSettings.storageKey,
+      encodeJson(
+        AppSettings(onboarded: true, darkMode: false, language: 'ur').toJson(),
+      ),
+    );
+
+    // The user taps a switch immediately, before the async read has finished.
+    await container
+        .read(appSettingsProvider.notifier)
+        .patch((s) => s.copyWith(darkMode: true));
+
+    final stored = await Repositories(AppDatabase.instance)
+        .settings
+        .get(AppSettings.storageKey);
+    final saved = AppSettings.fromJson(
+      (jsonDecodeMap(stored!)).cast<String, Object?>(),
+    );
+    expect(saved.darkMode, isTrue);
+    expect(saved.onboarded, isTrue, reason: 'onboarding must not be reset');
+    expect(saved.language, 'ur', reason: 'unrelated settings must survive');
+  });
+
   testWidgets('dark mode switch repaints the whole app', (tester) async {
     await tester.pumpWidget(const ProviderScope(child: MyBotApp()));
     await settle(tester);

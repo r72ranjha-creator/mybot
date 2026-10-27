@@ -149,8 +149,15 @@ class AppSettingsNotifier extends AsyncNotifier<AppSettings> {
     state = AsyncData(settings);
   }
 
+  /// Applies [change] to the stored settings.
+  ///
+  /// The next state is never built from `AppSettings()` defaults: a tap that
+  /// lands while the row is still loading (cold start, slow phone) would
+  /// otherwise persist a full set of defaults and silently wipe every other
+  /// setting — onboarding, language, safety level included. When the value is
+  /// not in memory yet we wait for the read that is already in flight.
   Future<void> patch(AppSettings Function(AppSettings) change) async {
-    final current = state.valueOrNull ?? AppSettings();
+    final current = state.valueOrNull ?? await future;
     await _persist(change(current));
   }
 
