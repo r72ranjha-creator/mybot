@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mybot/agent/ai_config.dart';
 import 'package:mybot/agent/llm_client.dart';
 import 'package:mybot/core/constants.dart';
+import 'package:mybot/core/token_budget.dart';
 import 'package:mybot/data/models.dart';
 
 void main() {
@@ -123,6 +124,61 @@ void main() {
       final restored = Strategy.fromMap(strategy.toMap());
       expect(restored.rules['trend_filter'], 'price above EMA200');
       expect((restored.rules['risk'] as Map)['max_risk_percent'], 1.0);
+    });
+  });
+
+  group('token budget', () {
+    test('off by default and always allows', () {
+      const budget = TokenBudget.off;
+      final decision = budget.check(BotRole.manager,
+          usedToday: 900000, estimatedTokens: 100000);
+      expect(decision.allowed, isTrue);
+      expect(budget.isOff, isTrue);
+      expect(budget.remaining(BotRole.manager, 500), -1);
+    });
+
+    test('blocks a plan that does not fit in what is left', () {
+      const budget = TokenBudget(perRole: {BotRole.manager: 1000});
+      final fits = budget.check(BotRole.manager,
+          usedToday: 400, estimatedTokens: 500);
+      expect(fits.allowed, isTrue);
+      final tooBig = budget.check(BotRole.manager,
+          usedToday: 400, estimatedTokens: 700);
+      expect(tooBig.allowed, isFalse);
+      expect(tooBig.reason, isNotNull);
+      expect(budget.remaining(BotRole.manager, 400), 600);
+    });
+
+    test('is blocked once the day is used up', () {
+      const budget = TokenBudget(perRole: {BotRole.manager: 100});
+      final decision =
+          budget.check(BotRole.manager, usedToday: 100, estimatedTokens: 1);
+      expect(decision.allowed, isFalse);
+      expect(budget.remaining(BotRole.manager, 140), 0);
+    });
+
+    test('falls back to the default ceiling for unlisted roles', () {
+      const budget = TokenBudget(
+        perRole: {BotRole.manager: 10},
+        defaultDaily: 5000,
+      );
+      expect(budget.limitFor(BotRole.writer), 5000);
+      expect(budget.limitFor(BotRole.manager), 10);
+      expect(budget.isOff, isFalse);
+    });
+
+    test('survives a round trip and ignores corrupt storage', () {
+      const budget = TokenBudget(perRole: {BotRole.writer: 2000});
+      final restored = TokenBudget.decode(budget.encode());
+      expect(restored.limitFor(BotRole.writer), 2000);
+      expect(TokenBudget.decode('not json').isOff, isTrue);
+      expect(TokenBudget.decode(null).isOff, isTrue);
+    });
+
+    test('estimates scale with text length', () {
+      expect(estimateTokens(''), 0);
+      expect(estimateTokens('abcd'), 1);
+      expect(estimatePlanTokens('hello', ['one', 'two']), greaterThan(600));
     });
   });
 }
