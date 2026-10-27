@@ -318,10 +318,36 @@ class ChatController extends Notifier<ChatState> {
     return ChatState.empty;
   }
 
+  /// The conversation is exactly two voices: what the user typed and what the
+  /// assistant answered. Anything else a row might carry (a system note, a
+  /// diagnostic line left behind by an older build) is not a message and must
+  /// not be shown as one.
+  static List<ChatMessage> conversational(List<ChatMessage> rows) =>
+      rows.where((m) => m.isUser || m.role == 'assistant').toList();
+
+  /// One plain sentence instead of a raw exception dump in the bubble. The
+  /// provider's own words are worth keeping ("no API key"), a Dart type name
+  /// is not.
+  static String _explain(Object error) {
+    var text = error.toString();
+    for (final prefix in const [
+      'Exception: ',
+      'LlmException: ',
+      'AutomationException: ',
+      'MissingPluginException: ',
+      'DioException ',
+    ]) {
+      if (text.startsWith(prefix)) text = text.substring(prefix.length);
+    }
+    text = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (text.length > 180) text = '${text.substring(0, 177)}…';
+    return 'Ye command mukammal nahi hui: $text';
+  }
+
   Future<void> _load() async {
     final repos = ref.read(repositoriesProvider);
     final messages = await repos.chat.recent(limit: 80);
-    state = state.copyWith(messages: messages);
+    state = state.copyWith(messages: conversational(messages));
   }
 
   Future<void> refresh() => _load();
@@ -372,7 +398,7 @@ class ChatController extends Notifier<ChatState> {
       state = state.copyWith(
         busy: false,
         clearStatus: true,
-        messages: refreshed,
+        messages: conversational(refreshed),
         pendingApproval: outcome.pending,
         lastFailed: outcome.failed,
         report: outcome.report,
@@ -398,7 +424,7 @@ class ChatController extends Notifier<ChatState> {
           ChatMessage(
             id: 'err-${DateTime.now().microsecondsSinceEpoch}',
             role: 'assistant',
-            content: 'That failed: $error',
+            content: _explain(error),
             createdAt: DateTime.now(),
           ),
         ],
@@ -446,7 +472,7 @@ class ChatController extends Notifier<ChatState> {
       state = state.copyWith(
         busy: false,
         clearStatus: true,
-        messages: refreshed,
+        messages: conversational(refreshed),
         pendingApproval: outcome.pending,
         lastFailed: outcome.failed,
         language: outcome.plan?.language,

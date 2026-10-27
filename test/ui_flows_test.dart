@@ -10,6 +10,7 @@ import 'package:mybot/core/constants.dart';
 import 'package:mybot/data/db.dart';
 import 'package:mybot/data/repositories.dart';
 import 'package:mybot/data/secure_store.dart';
+import 'package:mybot/data/models.dart';
 import 'package:mybot/state/providers.dart';
 import 'package:mybot/ui/screens/settings_screen.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -165,6 +166,34 @@ void main() {
 
     expect(find.text('Open WhatsApp'), findsWidgets,
         reason: 'the command must appear in the conversation');
+  });
+
+  testWidgets('chat shows only the two real voices', (tester) async {
+    final repos = Repositories(AppDatabase.instance);
+    await repos.chat.add(
+      ChatMessage(
+        id: 'sys-1',
+        role: 'system',
+        content: 'SYSTEM NOISE that is not a message',
+        createdAt: DateTime.now(),
+      ),
+    );
+    await repos.chat.add(
+      ChatMessage(
+        id: 'usr-1',
+        role: 'user',
+        content: 'A real question',
+        createdAt: DateTime.now(),
+      ),
+    );
+
+    await tester.pumpWidget(await app());
+    await settle(tester);
+    await tester.tap(navItem('Chat'));
+    await settle(tester);
+
+    expect(find.text('A real question'), findsWidgets);
+    expect(find.textContaining('SYSTEM NOISE'), findsNothing);
   });
 
   testWidgets('the send button sends the typed command', (tester) async {
